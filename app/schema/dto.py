@@ -432,6 +432,29 @@ class BuildingFeatureCollection(BaseModel):
             "can distinguish missing normatives from placement failures."
         ),
     )
+    generated_greenery: Optional[dict] = Field(
+        default=None,
+        description=(
+            "FeatureCollection with lawn polygons and tree points (`properties.kind`: "
+            "`lawn` | `tree`). Present only when `landscape_enabled` is set in the "
+            "generation parameters."
+        ),
+    )
+    generated_parking: Optional[dict] = Field(
+        default=None,
+        description=(
+            "FeatureCollection with surface parking cells (2.5 x 10 m, 25 m2 per place "
+            "with its aisle share). Present only when `landscape_enabled` is set."
+        ),
+    )
+    landscape_diagnostics: Optional[dict] = Field(
+        default=None,
+        description=(
+            "Per-block demand and supply for greenery and parking, the share of "
+            "underground parking, deficits and a sketch-level disclaimer. Present only "
+            "when `landscape_enabled` is set."
+        ),
+    )
 
     model_config = {
         "json_schema_extra": {

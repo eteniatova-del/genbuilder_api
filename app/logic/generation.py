@@ -26,6 +26,11 @@ from app.logic.service_generation import (
     ServiceGenerator,
 )
 from app.logic.restrictions import check_buildings_setbacks
+from app.logic.landscape import (
+    DISCLAIMER,
+    apply_landscape,
+    landscape_params_from_generation,
+)
 from app.logic.zone_taxonomy import normalize_zone_column
 
 
@@ -180,17 +185,22 @@ class Genbuilder:
         territory_id: Optional[int] = None,
     ):
         service_diagnostics = self._base_service_diagnostics(territory_id)
+        landscape_payload: Optional[dict] = None
 
         def build_feature_collection_response(
             buildings_fc: dict,
             selected_fc: dict,
         ) -> dict:
-            return {
+            response = {
                 "generated_buildings": buildings_fc,
                 "selected_features": selected_fc,
                 "service_normatives_loaded": service_diagnostics["normatives_found"] > 0,
                 "service_diagnostics": service_diagnostics,
             }
+            if landscape_payload is not None:
+                # Extra keys appear only when landscape_enabled is set.
+                response.update(landscape_payload)
+            return response
 
         def normalize_selected_features_payload(selected: object) -> dict:
             if isinstance(selected, dict):
@@ -894,6 +904,34 @@ class Genbuilder:
             nonres_mask.sum()
         )
         la_per_person = float(new_parameters.la_per_person)
+        if new_parameters.landscape_enabled:
+            landscape_blocks = gdf_blocks[
+                gdf_blocks["zone"].isin(["residential", "business", "unknown"])
+            ]
+            landscape = await asyncio.to_thread(
+                apply_landscape,
+                landscape_blocks,
+                buildings_all,
+                la_per_person,
+                landscape_params_from_generation(new_parameters),
+            )
+            greenery_gdf = await asyncio.to_thread(landscape["greenery"].to_crs, 4326)
+            parking_gdf = await asyncio.to_thread(landscape["parking"].to_crs, 4326)
+            landscape_payload = {
+                "generated_greenery": json.loads(greenery_gdf.to_json()),
+                "generated_parking": json.loads(parking_gdf.to_json()),
+                "landscape_diagnostics": {
+                    "disclaimer": DISCLAIMER,
+                    "blocks": landscape["diagnostics"],
+                },
+            }
+            logger.info(
+                "Genbuilder.run: landscape computed for {} blocks, greenery features={}, "
+                "parking cells={}",
+                len(landscape["diagnostics"]),
+                len(greenery_gdf),
+                len(parking_gdf),
+            )
         buildings_all = await asyncio.to_thread(buildings_all.to_crs, 4326)
         buildings_all["residents_number"] = round(buildings_all["living_area"] / la_per_person)
 

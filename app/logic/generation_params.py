@@ -2,7 +2,7 @@ from pathlib import Path
 import contextvars
 import contextlib
 
-from typing import Dict, Any, Iterator, Optional
+from typing import Dict, Any, Iterator, Literal, Optional
 from pydantic import BaseModel, ConfigDict
 
 
@@ -32,6 +32,14 @@ class GenParams(BaseModel):
     """Lower bound for dynamic buffer (in meters)."""
     physical_objects_exclusion_max_buffer_m: float = 60.0
     """Upper bound for dynamic buffer (in meters)."""
+    landscape_enabled: bool = False
+    """If True, greenery (lawn, trees) and surface parking are computed after buildings and services (app/logic/landscape.py)."""
+    housing_class: Literal["standard", "business"] = "standard"
+    """Housing comfort class (SP 42.13330.2026, tables 6.1 and 8.16): drives total flat area per resident and parking per apartment."""
+    persons_per_apartment: Optional[float] = None
+    """Average residents per apartment; if None, permanent parking is 350 cars per 1000 residents (SP 42, 8.113 note 2)."""
+    tree_crown_d: float = 15.0
+    """Mature crown diameter (m) of the planted tree; assumption, not a norm (Acer platanoides: 15-20 m)."""
     service_projects_file: str = str( Path(__file__).resolve().parent / "service_projects.geojson")
     """path to service projects file with geometry and plot/building parameters"""
     seed: Optional[int] = None
