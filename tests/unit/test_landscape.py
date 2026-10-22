@@ -84,7 +84,7 @@ def test_apply_landscape_works_per_block_and_skips_blocks_without_residents():
     assert len(out["diagnostics"]) == 1  # the second block has no buildings
     assert out["diagnostics"][0]["residents"] == 2000
     assert set(out["greenery"]["kind"]) <= {"lawn", "tree"}
-    assert set(out["parking"]["kind"]) <= {"surface"}
+    assert set(out["parking"]["kind"]) <= {"surface", "guest", "underground"}
     assert out["greenery"].crs == blocks.crs
 
 
@@ -94,3 +94,30 @@ def test_empty_result_is_still_a_geodataframe():
     out = apply_landscape(blocks, houses, 18.0, LandscapeParams())
     assert out["diagnostics"] == []
     assert len(out["greenery"]) == 0 and len(out["parking"]) == 0
+
+
+def test_each_house_gets_its_own_compact_parking_patch():
+    res = generate_landscape(BLOCK, HOUSES, 400, LandscapeParams(parking_type="surface"))
+    d = res["diagnostics"]
+    assert len(d["houses"]) == len(HOUSES)
+    assert all(h["permanent_surface"] > 0 and h["guest_places"] > 0 for h in d["houses"])
+    by_house = {}
+    for pt in res["parking_patches"]:
+        by_house.setdefault(pt["house_index"], []).append(pt)
+    assert set(by_house) == set(range(len(HOUSES)))
+
+
+def test_parking_type_underground_has_only_guest_on_surface():
+    res = generate_landscape(BLOCK, HOUSES, 400, LandscapeParams(parking_type="underground"))
+    d = res["diagnostics"]
+    assert d["permanent_surface_required"] == 0
+    assert d["permanent_underground"] == d["permanent_places"]
+    assert {pt["kind"] for pt in res["parking_patches"]} == {"guest"}
+
+
+def test_parking_type_surface_reports_deficit_instead_of_going_underground():
+    small_block = box(0, 0, 90, 60)
+    res = generate_landscape(small_block, [box(10, 10, 80, 25)], 600, LandscapeParams(parking_type="surface"))
+    d = res["diagnostics"]
+    assert d["underground_share"] == 0
+    assert d["parking_deficit_surface"] > 0

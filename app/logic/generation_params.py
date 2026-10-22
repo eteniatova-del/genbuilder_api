@@ -38,6 +38,8 @@ class GenParams(BaseModel):
     """Housing comfort class (SP 42.13330.2026, tables 6.1 and 8.16): drives total flat area per resident and parking per apartment."""
     persons_per_apartment: Optional[float] = None
     """Average residents per apartment; if None, permanent parking is 350 cars per 1000 residents (SP 42, 8.113 note 2)."""
+    parking_type: Literal["underground", "surface", "mixed"] = "mixed"
+    """Parking type for permanent places, chosen by the user: underground only, surface only, or mixed (minimal underground share)."""
     tree_crown_d: float = 15.0
     """Mature crown diameter (m) of the planted tree; assumption, not a norm (Acer platanoides: 15-20 m)."""
     service_projects_file: str = str( Path(__file__).resolve().parent / "service_projects.geojson")

@@ -41,6 +41,10 @@ class LandscapeParams:
     cell_w: float = 2.5                                # ASSUMPTION: ячейка места с долей проезда 2,5 x 10 м = 25 м2
     cell_l: float = 10.0
     underground_step: float = 0.1
+    parking_type: str = "mixed"                        # underground | surface | mixed (выбирает пользователь)
+    guest_gap: float = 3.0                             # ASSUMPTION: минимальный зазор гостевого пятна от стены, м (норм нет)
+    patch_gap: float = 2.5                             # ASSUMPTION: зазор между пятнами разных домов, м
+    search_step: float = 5.0                           # шаг перебора позиций пятна, м
     max_lot_places: int = 50                           # ASSUMPTION: стоянки делятся на лоты не более N мест; разрыв от окон берётся по размеру лота
     # ASSUMPTION (вторичный источник): разрыв открытой стоянки до окон по числу мест
     window_setback: tuple = ((10, 10.0), (50, 15.0), (100, 25.0), (300, 35.0), (10**9, 50.0))
@@ -79,22 +83,79 @@ DISCLAIMER = (
 )
 
 
-def _place_cells(zone, n, p, taken):
-    """Жадная раскладка ячеек 2,5 x 10 м по сетке в зоне; возвращает список прямоугольников."""
-    if n <= 0 or zone.is_empty:
-        return []
-    minx, miny, maxx, maxy = zone.bounds
+def _shapes(n, p):
+    """Компактные варианты пятна из n ячеек: (ширина, высота, число столбцов, число рядов, повёрнуто)."""
     out = []
-    y = miny
-    while y + p.cell_l <= maxy and len(out) < n:
+    for rows in range(1, 6):
+        cols = ceil(n / rows)
+        if cols < rows:
+            continue
+        out.append((cols * p.cell_w, rows * p.cell_l, cols, rows, False))
+        out.append((rows * p.cell_l, cols * p.cell_w, cols, rows, True))
+    return out or [(n * p.cell_w, p.cell_l, n, 1, False)]
+
+
+def _patch_cells(x, y, n, cols, rows, rot, p):
+    cells = []
+    for r in range(rows):
+        for c in range(cols):
+            if len(cells) >= n:
+                break
+            if rot:
+                cells.append(box(x + r * p.cell_l, y + c * p.cell_w, x + (r + 1) * p.cell_l, y + (c + 1) * p.cell_w))
+            else:
+                cells.append(box(x + c * p.cell_w, y + r * p.cell_l, x + (c + 1) * p.cell_w, y + (r + 1) * p.cell_l))
+    return cells
+
+
+def _find_patch(n, zone, target, p):
+    """Одно компактное пятно из n ячеек в zone, ближайшее к target; None, если не помещается."""
+    if n <= 0 or zone.is_empty:
+        return None
+    from shapely.prepared import prep
+    pz = prep(zone)
+    minx, miny, maxx, maxy = zone.bounds
+    step = p.search_step
+    best, best_d = None, 1e18
+    for w, h, cols, rows, rot in _shapes(n, p):
         x = minx
-        while x + p.cell_w <= maxx and len(out) < n:
-            c = box(x, y, x + p.cell_w, y + p.cell_l)
-            if zone.contains(c) and not any(c.intersects(t) for t in taken + out):
-                out.append(c)
-            x += p.cell_w
-        y += p.cell_l
-    return out
+        while x + w <= maxx:
+            y = miny
+            while y + h <= maxy:
+                r = box(x, y, x + w, y + h)
+                if pz.contains(r):
+                    d = r.distance(target)
+                    if d < best_d:
+                        best, best_d = (x, y, cols, rows, rot), d
+                y += step
+            x += step
+    if best is None:
+        return None
+    x, y, cols, rows, rot = best
+    return _patch_cells(x, y, n, cols, rows, rot, p)
+
+
+def _place_for_house(n, free, bu_u, taken, target, p, guest=False, depth=0):
+    """Размещает n мест у дома одним пятном; если не помещается, делит пополам (не глубже 2 раз).
+    Возвращает (список пятен-ячеек, размещено мест, отступ от окон, м)."""
+    if n <= 0:
+        return [], 0, 0.0
+    sb = p.guest_gap if guest else _setback(n, p.window_setback)
+    zone = free
+    if bu_u is not None:
+        zone = zone.difference(bu_u.buffer(sb))
+    if taken is not None and not taken.is_empty:
+        zone = zone.difference(taken.buffer(p.patch_gap))
+    cells = _find_patch(n, zone, target, p)
+    if cells is not None:
+        return [cells], n, sb
+    if depth >= 2 or n < 2:
+        return [], 0, sb
+    h1 = n // 2
+    p1, k1, s1 = _place_for_house(h1, free, bu_u, taken, target, p, guest, depth + 1)
+    t2 = unary_union([taken] + [c for pc in p1 for c in pc]) if (taken is not None and p1) else (unary_union([c for pc in p1 for c in pc]) if p1 else taken)
+    p2, k2, s2 = _place_for_house(n - h1, free, bu_u, t2, target, p, guest, depth + 1)
+    return p1 + p2, k1 + k2, max(s1, s2)
 
 
 def _place_trees(lawn, buildings_u, parking_u, p, carriageway=None, walkways=None):
@@ -128,50 +189,92 @@ def _place_trees(lawn, buildings_u, parking_u, p, carriageway=None, walkways=Non
     return pts, wall, step
 
 
-def generate_landscape(block: Polygon, buildings: list, residents: float, p: LandscapeParams | None = None, carriageway=None, walkways=None):
+def generate_landscape(block: Polygon, buildings: list, residents: float, p: LandscapeParams | None = None,
+                       carriageway=None, walkways=None, house_residents: list | None = None):
+    """Парковки привязаны к домам: у каждого дома своё пятно постоянных мест и своё пятно гостевых.
+
+    parking_type: underground (постоянные только под землёй), surface (только наземные; нехватка
+    места показывается как дефицит), mixed (доля подземных подбирается минимальной).
+    """
     p = p or LandscapeParams()
     d = demand(residents, p)
     bu = unary_union(buildings) if buildings else None
     free = block.difference(bu) if bu is not None else block
     free_area = free.area
+    n_h = len(buildings)
+    if house_residents is None or len(house_residents) != n_h:
+        tot = sum(b.area for b in buildings) or 1.0
+        house_residents = [residents * b.area / tot for b in buildings]
+    hd = [demand(r, p) for r in house_residents]
+    order = sorted(range(n_h), key=lambda i: -hd[i]["permanent_places"])
+
+    if p.parking_type == "underground":
+        u_values = [1.0]
+    elif p.parking_type == "surface":
+        u_values = [0.0]
+    else:
+        steps = int(round(1 / p.underground_step))
+        u_values = [k * p.underground_step for k in range(steps + 1)]
 
     chosen = None
-    # перебор доли подземных постоянных мест: 0, 0.1, ..., 1.0
-    steps = int(round(1 / p.underground_step))
-    for k in range(steps + 1):
-        u = k * p.underground_step
-        perm_surface = ceil(d["permanent_places"] * (1 - u))
-        # гостевые: разрывы от окон не устанавливаются (СанПиН прим. 11, вторичный источник), ставим везде в свободной зоне
-        zone_perm = free.difference(bu.buffer(_setback(min(perm_surface, p.max_lot_places), p.window_setback))) if bu is not None else free
-        perm_cells = _place_cells(zone_perm, perm_surface, p, [])
-        guest_cells = _place_cells(free, d["guest_places"], p, perm_cells)
-        placed_perm, placed_guest = len(perm_cells), len(guest_cells)
-        parking_u = unary_union(perm_cells + guest_cells) if (perm_cells or guest_cells) else None
+    for u in u_values:
+        taken, patches, houses_diag = None, [], []
+        deficit = 0
+        for i in order:
+            perm_surf = ceil(hd[i]["permanent_places"] * (1 - u))
+            pc, placed, sb = _place_for_house(perm_surf, free, bu, taken, buildings[i], p)
+            for c in pc:
+                patches.append({"house_index": i, "kind": "surface", "cells": c})
+            if pc:
+                taken = unary_union(([taken] if taken is not None else []) + [x for c in pc for x in c])
+            gc, gplaced, _ = _place_for_house(hd[i]["guest_places"], free, bu, taken, buildings[i], p, guest=True)
+            for c in gc:
+                patches.append({"house_index": i, "kind": "guest", "cells": c})
+            if gc:
+                taken = unary_union(([taken] if taken is not None else []) + [x for c in gc for x in c])
+            deficit += (perm_surf - placed) + (hd[i]["guest_places"] - gplaced)
+            houses_diag.append({
+                "house_index": i, "residents": round(house_residents[i]),
+                "permanent_places": hd[i]["permanent_places"], "permanent_underground": hd[i]["permanent_places"] - perm_surf,
+                "permanent_surface": placed, "permanent_surface_required": perm_surf,
+                "guest_places": gplaced, "guest_required": hd[i]["guest_places"],
+                "window_setback_m": sb, "patches": len(pc) + len(gc),
+            })
+        parking_u = unary_union([x for pt in patches for x in pt["cells"]]) if patches else None
         lawn = free.difference(parking_u) if parking_u is not None else free
         lawn_area = lawn.area - d["platforms_reserved_m2"]
-        ok = placed_perm >= perm_surface and placed_guest >= d["guest_places"] and lawn_area >= d["green_required_m2"]
-        chosen = (u, perm_cells, guest_cells, parking_u, lawn, lawn_area, perm_surface, placed_perm, placed_guest)
+        ok = deficit == 0 and lawn_area >= d["green_required_m2"]
+        chosen = (u, patches, parking_u, lawn, lawn_area, deficit, houses_diag)
         if ok:
             break
-    u, perm_cells, guest_cells, parking_u, lawn, lawn_area, perm_surface, placed_perm, placed_guest = chosen
+    u, patches, parking_u, lawn, lawn_area, deficit, houses_diag = chosen
     trees, wall, step = _place_trees(lawn, bu, parking_u, p, carriageway, walkways)
+    houses_diag.sort(key=lambda h: h["house_index"])
+    perm_surface = sum(h["permanent_surface_required"] for h in houses_diag)
 
     diag = {
         **d,
+        "parking_type": p.parking_type,
         "free_area_after_buildings_m2": round(free_area, 1),
         "underground_share": round(u, 2),
         "permanent_surface_required": perm_surface,
-        "permanent_surface_placed": placed_perm,
+        "permanent_surface_placed": sum(h["permanent_surface"] for h in houses_diag),
         "permanent_underground": d["permanent_places"] - perm_surface,
-        "guest_placed": placed_guest,
+        "guest_placed": sum(h["guest_places"] for h in houses_diag),
         "lawn_available_m2": round(lawn_area, 1),
         "green_deficit_m2": round(max(0.0, d["green_required_m2"] - lawn_area), 1),
-        "parking_deficit_surface": max(0, perm_surface - placed_perm) + max(0, d["guest_places"] - placed_guest),
+        "parking_deficit_surface": deficit,
         "trees": len(trees), "tree_wall_buffer_m": wall, "tree_spacing_m": step,
+        "houses": houses_diag,
         "disclaimer": DISCLAIMER,
-        "assumptions": ["tree_crown_d", "tree_wall_buffer", "tree_spacing", "cell 2.5x10", "window_setback (SanPiN, secondary)"],
+        "assumptions": ["tree_crown_d", "tree_wall_buffer", "tree_spacing", "cell 2.5x10", "window_setback (SanPiN, secondary)",
+                        "guest_gap", "patch_gap", "underground parking: places only, area norm not set"],
     }
-    return {"parking_cells": perm_cells + guest_cells, "lawn": lawn, "trees": trees, "diagnostics": diag}
+    # parking_cells: по одному полигону на пятно (объединение ячеек) — для деревьев и вывода
+    cells_out = [unary_union(pt["cells"]) for pt in patches]
+    return {"parking_cells": cells_out, "parking_patches": [
+        {"house_index": pt["house_index"], "kind": pt["kind"], "places": len(pt["cells"]), "geometry": unary_union(pt["cells"])}
+        for pt in patches], "lawn": lawn, "trees": trees, "diagnostics": diag}
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +286,7 @@ def landscape_params_from_generation(gen_params) -> LandscapeParams:
         housing_class=gen_params.housing_class,
         persons_per_apartment=gen_params.persons_per_apartment,
         tree_crown_d=float(gen_params.tree_crown_d),
+        parking_type=gen_params.parking_type,
     )
 
 
@@ -207,7 +311,9 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
         if residents <= 0:
             continue
         footprints = [g for g in inside.geometry if g is not None and not g.is_empty]
-        res = generate_landscape(geom, footprints, residents, p)
+        las = [float(v) if v == v else 0.0 for v in inside["living_area"]] if "living_area" in inside.columns else []
+        hres = [x / la_per_person for x in las] if las and len(las) == len(footprints) else None
+        res = generate_landscape(geom, footprints, residents, p, house_residents=hres)
         d = res["diagnostics"]
         d["block_index"] = bid
         d["residents"] = round(residents)
@@ -217,8 +323,14 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
             greenery_rows.append({"block_index": bid, "kind": "lawn", "geometry": lawn})
         for t in res["trees"]:
             greenery_rows.append({"block_index": bid, "kind": "tree", "geometry": t})
-        for c in res["parking_cells"]:
-            parking_rows.append({"block_index": bid, "kind": "surface", "geometry": c})
+        for pt in res["parking_patches"]:
+            parking_rows.append({"block_index": bid, "house_index": pt["house_index"],
+                                 "kind": "surface" if pt["kind"] == "surface" else "guest",
+                                 "places": pt["places"], "geometry": pt["geometry"]})
+        for hd_ in d.get("houses", []):                      # подземные места: контур дома, площадь по месту не нормируем
+            if hd_["permanent_underground"] > 0:
+                parking_rows.append({"block_index": bid, "house_index": hd_["house_index"], "kind": "underground",
+                                     "places": hd_["permanent_underground"], "geometry": footprints[hd_["house_index"]]})
     crs = blocks_utm.crs
     return {
         "greenery": gpd.GeoDataFrame(greenery_rows, geometry="geometry", crs=crs) if greenery_rows
