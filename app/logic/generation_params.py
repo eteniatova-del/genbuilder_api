@@ -40,6 +40,10 @@ class GenParams(BaseModel):
     """Average residents per apartment; if None, permanent parking is 350 cars per 1000 residents (SP 42, 8.113 note 2)."""
     parking_type: Literal["underground", "surface", "mixed"] = "mixed"
     """Parking type for permanent places, chosen by the user: underground only, surface only, or mixed (minimal underground share)."""
+    roads_enabled: bool = False
+    """If True (requires landscape_enabled), intra-block roads are generated (app/logic/roads.py) and parking/greenery are placed around them."""
+    floor_height_m: float = 3.0
+    """Assumed storey height (m) used to convert floors to building height for fire-access road width; not a norm."""
     tree_crown_d: float = 15.0
     """Mature crown diameter (m) of the planted tree; assumption, not a norm (Acer platanoides: 15-20 m)."""
     service_projects_file: str = str( Path(__file__).resolve().parent / "service_projects.geojson")

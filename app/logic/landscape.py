@@ -43,6 +43,9 @@ class LandscapeParams:
     underground_step: float = 0.1
     parking_type: str = "mixed"                        # underground | surface | mixed (выбирает пользователь)
     guest_gap: float = 3.0                             # ASSUMPTION: минимальный зазор гостевого пятна от стены, м (норм нет)
+    roads_enabled: bool = False                        # строить внутриквартальные проезды (app/logic/roads.py)
+    floor_height: float = 3.0                          # ASSUMPTION: высота этажа, м (для пожарной ширины и отступа проезда)
+    parking_road_reach: float = 12.0                   # ASSUMPTION: пятна парковки предпочтительно не дальше этого расстояния от проезда
     patch_gap: float = 2.5                             # ASSUMPTION: зазор между пятнами разных домов, м
     search_step: float = 5.0                           # шаг перебора позиций пятна, м
     max_lot_places: int = 50                           # ASSUMPTION: стоянки делятся на лоты не более N мест; разрыв от окон берётся по размеру лота
@@ -135,7 +138,7 @@ def _find_patch(n, zone, target, p):
     return _patch_cells(x, y, n, cols, rows, rot, p)
 
 
-def _place_for_house(n, free, bu_u, taken, target, p, guest=False, depth=0):
+def _place_for_house(n, free, bu_u, taken, target, p, guest=False, depth=0, near=None):
     """Размещает n мест у дома одним пятном; если не помещается, делит пополам (не глубже 2 раз).
     Возвращает (список пятен-ячеек, размещено мест, отступ от окон, м)."""
     if n <= 0:
@@ -146,15 +149,19 @@ def _place_for_house(n, free, bu_u, taken, target, p, guest=False, depth=0):
         zone = zone.difference(bu_u.buffer(sb))
     if taken is not None and not taken.is_empty:
         zone = zone.difference(taken.buffer(p.patch_gap))
-    cells = _find_patch(n, zone, target, p)
+    cells = None
+    if near is not None and not near.is_empty:          # сначала пробуем у проезда, затем где угодно
+        cells = _find_patch(n, zone.intersection(near.buffer(p.parking_road_reach)), target, p)
+    if cells is None:
+        cells = _find_patch(n, zone, target, p)
     if cells is not None:
         return [cells], n, sb
     if depth >= 2 or n < 2:
         return [], 0, sb
     h1 = n // 2
-    p1, k1, s1 = _place_for_house(h1, free, bu_u, taken, target, p, guest, depth + 1)
+    p1, k1, s1 = _place_for_house(h1, free, bu_u, taken, target, p, guest, depth + 1, near)
     t2 = unary_union([taken] + [c for pc in p1 for c in pc]) if (taken is not None and p1) else (unary_union([c for pc in p1 for c in pc]) if p1 else taken)
-    p2, k2, s2 = _place_for_house(n - h1, free, bu_u, t2, target, p, guest, depth + 1)
+    p2, k2, s2 = _place_for_house(n - h1, free, bu_u, t2, target, p, guest, depth + 1, near)
     return p1 + p2, k1 + k2, max(s1, s2)
 
 
@@ -190,7 +197,7 @@ def _place_trees(lawn, buildings_u, parking_u, p, carriageway=None, walkways=Non
 
 
 def generate_landscape(block: Polygon, buildings: list, residents: float, p: LandscapeParams | None = None,
-                       carriageway=None, walkways=None, house_residents: list | None = None):
+                       carriageway=None, walkways=None, house_residents: list | None = None, roads=None):
     """Парковки привязаны к домам: у каждого дома своё пятно постоянных мест и своё пятно гостевых.
 
     parking_type: underground (постоянные только под землёй), surface (только наземные; нехватка
@@ -200,6 +207,14 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
     d = demand(residents, p)
     bu = unary_union(buildings) if buildings else None
     free = block.difference(bu) if bu is not None else block
+    road_u = None
+    if roads is not None:
+        parts = [c["geometry"] for c in roads.get("carriageways", [])] + list(roads.get("turnarounds", []))
+        parts = [g for g in parts if g is not None and not g.is_empty]
+        if parts:
+            road_u = unary_union(parts)
+            free = free.difference(road_u)
+            carriageway = road_u if carriageway is None else unary_union([carriageway, road_u])
     free_area = free.area
     n_h = len(buildings)
     if house_residents is None or len(house_residents) != n_h:
@@ -222,12 +237,12 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
         deficit = 0
         for i in order:
             perm_surf = ceil(hd[i]["permanent_places"] * (1 - u))
-            pc, placed, sb = _place_for_house(perm_surf, free, bu, taken, buildings[i], p)
+            pc, placed, sb = _place_for_house(perm_surf, free, bu, taken, buildings[i], p, near=road_u)
             for c in pc:
                 patches.append({"house_index": i, "kind": "surface", "cells": c})
             if pc:
                 taken = unary_union(([taken] if taken is not None else []) + [x for c in pc for x in c])
-            gc, gplaced, _ = _place_for_house(hd[i]["guest_places"], free, bu, taken, buildings[i], p, guest=True)
+            gc, gplaced, _ = _place_for_house(hd[i]["guest_places"], free, bu, taken, buildings[i], p, guest=True, near=road_u)
             for c in gc:
                 patches.append({"house_index": i, "kind": "guest", "cells": c})
             if gc:
@@ -266,6 +281,7 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
         "parking_deficit_surface": deficit,
         "trees": len(trees), "tree_wall_buffer_m": wall, "tree_spacing_m": step,
         "houses": houses_diag,
+        "roads": roads["diagnostics"] if roads is not None else None,
         "disclaimer": DISCLAIMER,
         "assumptions": ["tree_crown_d", "tree_wall_buffer", "tree_spacing", "cell 2.5x10", "window_setback (SanPiN, secondary)",
                         "guest_gap", "patch_gap", "underground parking: places only, area norm not set"],
@@ -287,6 +303,8 @@ def landscape_params_from_generation(gen_params) -> LandscapeParams:
         persons_per_apartment=gen_params.persons_per_apartment,
         tree_crown_d=float(gen_params.tree_crown_d),
         parking_type=gen_params.parking_type,
+        roads_enabled=gen_params.roads_enabled,
+        floor_height=float(gen_params.floor_height_m),
     )
 
 
@@ -300,7 +318,7 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
     """
     import geopandas as gpd
 
-    greenery_rows, parking_rows, diag = [], [], []
+    greenery_rows, parking_rows, road_rows, diag = [], [], [], []
     for bid, (_, block) in enumerate(blocks_utm.iterrows()):
         geom = block.geometry
         if geom is None or geom.is_empty:
@@ -313,7 +331,19 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
         footprints = [g for g in inside.geometry if g is not None and not g.is_empty]
         las = [float(v) if v == v else 0.0 for v in inside["living_area"]] if "living_area" in inside.columns else []
         hres = [x / la_per_person for x in las] if las and len(las) == len(footprints) else None
-        res = generate_landscape(geom, footprints, residents, p, house_residents=hres)
+        roads = None
+        if p.roads_enabled:
+            from app.logic.roads import RoadParams, generate_roads
+            fl = [float(v) if v == v else 1.0 for v in inside["floors_count"]] if "floors_count" in inside.columns else [1.0] * len(footprints)
+            sv = [(x if isinstance(x, str) else "") for x in inside["service"]] if "service" in inside.columns else None
+            roads = generate_roads(geom, footprints, fl, sv, RoadParams(floor_height=p.floor_height))
+            for c in roads["carriageways"]:
+                road_rows.append({"block_index": bid, "kind": "carriageway", "width_m": c["width"],
+                                  "road_class": c["class"], "geometry": c["geometry"]})
+            for t in roads["turnarounds"]:
+                road_rows.append({"block_index": bid, "kind": "turnaround", "width_m": 15.0,
+                                  "road_class": "turnaround", "geometry": t})
+        res = generate_landscape(geom, footprints, residents, p, house_residents=hres, roads=roads)
         d = res["diagnostics"]
         d["block_index"] = bid
         d["residents"] = round(residents)
@@ -336,6 +366,8 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
         "greenery": gpd.GeoDataFrame(greenery_rows, geometry="geometry", crs=crs) if greenery_rows
         else gpd.GeoDataFrame({"block_index": [], "kind": []}, geometry=[], crs=crs),
         "parking": gpd.GeoDataFrame(parking_rows, geometry="geometry", crs=crs) if parking_rows
+        else gpd.GeoDataFrame({"block_index": [], "kind": []}, geometry=[], crs=crs),
+        "roads": gpd.GeoDataFrame(road_rows, geometry="geometry", crs=crs) if road_rows
         else gpd.GeoDataFrame({"block_index": [], "kind": []}, geometry=[], crs=crs),
         "diagnostics": diag,
     }

@@ -917,9 +917,11 @@ class Genbuilder:
             )
             greenery_gdf = await asyncio.to_thread(landscape["greenery"].to_crs, 4326)
             parking_gdf = await asyncio.to_thread(landscape["parking"].to_crs, 4326)
+            roads_gdf = await asyncio.to_thread(landscape["roads"].to_crs, 4326)
             landscape_payload = {
                 "generated_greenery": json.loads(greenery_gdf.to_json()),
                 "generated_parking": json.loads(parking_gdf.to_json()),
+                **({"generated_roads": json.loads(roads_gdf.to_json())} if len(roads_gdf) else {}),
                 "landscape_diagnostics": {
                     "disclaimer": DISCLAIMER,
                     "blocks": landscape["diagnostics"],

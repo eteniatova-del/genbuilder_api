@@ -443,8 +443,18 @@ class BuildingFeatureCollection(BaseModel):
     generated_parking: Optional[dict] = Field(
         default=None,
         description=(
-            "FeatureCollection with surface parking cells (2.5 x 10 m, 25 m2 per place "
-            "with its aisle share). Present only when `landscape_enabled` is set."
+            "FeatureCollection with parking polygons bound to houses (`properties.house_index`): "
+            "`surface` (permanent places, one compact patch per house), `guest` (guest places) and "
+            "`underground` (house footprint, `places` = underground places). Cell: 2.5 x 10 m "
+            "(25 m2 per place with its aisle share). Present only when `landscape_enabled` is set."
+        ),
+    )
+    generated_roads: Optional[dict] = Field(
+        default=None,
+        description=(
+            "FeatureCollection with intra-block roads (`properties.kind`: `carriageway` with "
+            "`width_m` and `road_class` | `turnaround`). Present only when both `landscape_enabled` "
+            "and `roads_enabled` are set. Sketch-level network, see `landscape_diagnostics`."
         ),
     )
     landscape_diagnostics: Optional[dict] = Field(
