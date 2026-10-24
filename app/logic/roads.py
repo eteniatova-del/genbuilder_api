@@ -67,7 +67,7 @@ def _grid(block, p):
 
 
 def generate_roads(block: Polygon, buildings: list, floors: list, services: list | None = None,
-                   p: RoadParams | None = None) -> dict:
+                   p: RoadParams | None = None, patches: list | None = None) -> dict:
     p = p or RoadParams()
     n = len(buildings)
     diag = {"buildings": n, "unreachable": [], "dead_end_violations": [], "road_length_m": 0.0,
@@ -78,13 +78,17 @@ def generate_roads(block: Polygon, buildings: list, floors: list, services: list
         return {"carriageways": [], "turnarounds": [], "diagnostics": diag}
     floors = [float(f) if f == f and f else 1.0 for f in floors]
     heights = [f * p.floor_height for f in floors]
-    fw = [fire_width_for(h, p) for h in heights]
+    fw = [fire_width_for(h, p) for h in heights]  # список; для парковочных пятен дополняется ниже
     bu = unary_union(buildings)
+    patches = [g for g in (patches or []) if g is not None and not g.is_empty]
+    pu = unary_union(patches) if patches else None
     # центр проезда не ближе 5 м (край) + половина самой широкой пожарной ширины 6 м
     clearance = p.wall_gap_low[0] + max(w for _, w in p.fire_width) / 2.0
     xs, ys, gx, gy = _grid(block, p)
     ny, nx = gx.shape
     allowed_poly = block.difference(bu.buffer(clearance))
+    if pu is not None:
+        allowed_poly = allowed_poly.difference(pu.buffer(p.cell / 2.0))
     allowed = contains_xy(allowed_poly, gx.ravel(), gy.ravel()).reshape(ny, nx)
     idx = -np.ones((ny, nx), dtype=np.int64)
     idx[allowed] = np.arange(allowed.sum())
@@ -131,6 +135,10 @@ def generate_roads(block: Polygon, buildings: list, floors: list, services: list
         cand = np.where(band)[0]
         if len(cand) == 0:
             cand = np.where(dist_to_b[i] <= target + 3 * p.cell)[0]
+        # доступ не в самой полосе улицы: у каждого дома должен быть нарисованный проезд от улицы
+        inner = cand[~np.isin(cand, street_nodes)]
+        if len(inner) > 0:
+            cand = inner
         if len(cand) == 0:
             accesses.append([])
             continue
@@ -144,11 +152,25 @@ def generate_roads(block: Polygon, buildings: list, floors: list, services: list
             acc.append(int(cand[np.argmax(far)]))
         accesses.append(acc)
 
+    # парковочные пятна: к каждому подводится проезд (второстепенный); подъезд к краю пятна
+    pat_ids = []
+    for k, pg in enumerate(patches):
+        dp = sdist(pg, pts_a)
+        cand = np.where((dp >= p.cell / 2.0) & (dp <= p.cell * 2.2))[0]
+        cand = cand[~np.isin(cand, street_nodes)] if len(cand) else cand
+        if len(cand) == 0:
+            continue
+        vid = n + k
+        pat_ids.append(vid)
+        fw.append(p.secondary_width)
+        accesses.append([int(cand[np.argmin(db_all[cand])])])
+    n_all = n + len(patches)
+
     def graph():
         w = ww * np.where(on_road[ii] | on_road[jj], p.reuse_cost, 1.0)
         return csr_matrix((w, (ii, jj)), shape=(nn, nn))
 
-    order = sorted(range(n), key=lambda i: min([db_all[a] for a in accesses[i]] or [1e9]))
+    order = sorted(range(len(accesses)), key=lambda i: min([db_all[a] for a in accesses[i]] or [1e9]))
     paths = {}     # (i, k) -> список узлов от доступа до цели
     served = {}    # узел -> множество зданий
     for i in order:
@@ -287,6 +309,8 @@ def generate_roads(block: Polygon, buildings: list, floors: list, services: list
     carriageways = []
     for w, segs in sorted(lines_by_w.items()):
         poly = unary_union([sg.buffer(w / 2.0, cap_style=1, join_style=1) for sg in segs]).difference(bu)
+        if pu is not None:
+            poly = poly.difference(pu)
         carriageways.append({"width": w, "class": "main" if w >= p.main_width else "secondary", "geometry": poly})
     diag["road_length_m"] = round(total_len, 1)
 
@@ -295,7 +319,26 @@ def generate_roads(block: Polygon, buildings: list, floors: list, services: list
     h = p.turnaround / 2.0
     for lf, total, chain in final:
         x, y = cell_xy[lf]
-        turn.append(box(x - h, y - h, x + h, y + h).difference(bu))
+        # ищем положение площадки 15 x 15 м рядом с концом тупика: не ближе 5 м к стенам, без стоянок, внутри квартала
+        # площадка должна накрывать конец тупика, поэтому смещение не больше половины стороны
+        cands = sorted(((dx, dy) for dx in np.arange(-h, h + 1e-6, p.cell)
+                        for dy in np.arange(-h, h + 1e-6, p.cell)), key=lambda t: hypot(*t))
+        sq = None
+        for dx, dy in cands:
+            c_ = box(x + dx - h, y + dy - h, x + dx + h, y + dy + h)
+            if bu.distance(c_) < p.wall_gap_low[0] - 1e-6:
+                continue
+            if pu is not None and pu.intersection(c_).area > 1e-6:
+                continue
+            if not block.contains(c_):
+                continue
+            sq = c_
+            break
+        if sq is None:        # нет места: площадка обрезается по зданиям и стоянкам (нарушение будет видно в проверках)
+            sq = box(x - h, y - h, x + h, y + h).difference(bu)
+            if pu is not None:
+                sq = sq.difference(pu)
+        turn.append(sq)
         if total > p.dead_end_max:
             diag["dead_end_violations"].append({"leaf_xy": [round(float(x), 1), round(float(y), 1)], "dead_end_m": round(total, 1)})
     diag["max_dead_end_m"] = round(max([t for _, t, _ in final] or [0.0]), 1)

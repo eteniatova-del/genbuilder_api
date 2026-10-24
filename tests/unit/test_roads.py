@@ -65,7 +65,7 @@ def test_landscape_with_roads_keeps_parking_and_trees_off_the_road():
     roads = generate_roads(BLOCK, HOUSES, [8] * 4)
     res = generate_landscape(BLOCK, HOUSES, 600, LandscapeParams(parking_type="surface"), roads=roads)
     ru = unary_union([c["geometry"] for c in roads["carriageways"]] + list(roads["turnarounds"]))
-    assert res["diagnostics"]["roads"] is not None
+    assert res["roads"] is not None and res["roads"]["diagnostics"]["buildings"] == len(HOUSES)
     for c in res["parking_cells"]:
         assert c.intersection(ru).area < 1e-6
     for t in res["trees"]:

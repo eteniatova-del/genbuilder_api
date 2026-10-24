@@ -197,7 +197,7 @@ def _place_trees(lawn, buildings_u, parking_u, p, carriageway=None, walkways=Non
 
 
 def generate_landscape(block: Polygon, buildings: list, residents: float, p: LandscapeParams | None = None,
-                       carriageway=None, walkways=None, house_residents: list | None = None, roads=None):
+                       carriageway=None, walkways=None, house_residents: list | None = None, roads=None, road_inputs: dict | None = None):
     """Парковки привязаны к домам: у каждого дома своё пятно постоянных мест и своё пятно гостевых.
 
     parking_type: underground (постоянные только под землёй), surface (только наземные; нехватка
@@ -263,6 +263,20 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
         if ok:
             break
     u, patches, parking_u, lawn, lawn_area, deficit, houses_diag = chosen
+    if roads is not None and road_inputs is not None and patches:
+        # второй проход: к каждому пятну парковки подводится проезд; газон и деревья считаются по итоговой сети
+        from app.logic.roads import generate_roads
+        roads = generate_roads(block, buildings, road_inputs["floors"], road_inputs.get("services"),
+                               road_inputs["params"], patches=[pt["geometry"] if "geometry" in pt else unary_union(pt["cells"]) for pt in patches])
+        parts = [c["geometry"] for c in roads["carriageways"]] + list(roads["turnarounds"])
+        parts = [g for g in parts if g is not None and not g.is_empty]
+        road_u = unary_union(parts) if parts else None
+        free_nr = block.difference(bu) if bu is not None else block
+        lawn = free_nr.difference(road_u) if road_u is not None else free_nr
+        if parking_u is not None:
+            lawn = lawn.difference(parking_u)
+        lawn_area = lawn.area - d["platforms_reserved_m2"]
+        carriageway = road_u
     trees, wall, step = _place_trees(lawn, bu, parking_u, p, carriageway, walkways)
     houses_diag.sort(key=lambda h: h["house_index"])
     perm_surface = sum(h["permanent_surface_required"] for h in houses_diag)
@@ -281,7 +295,6 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
         "parking_deficit_surface": deficit,
         "trees": len(trees), "tree_wall_buffer_m": wall, "tree_spacing_m": step,
         "houses": houses_diag,
-        "roads": roads["diagnostics"] if roads is not None else None,
         "disclaimer": DISCLAIMER,
         "assumptions": ["tree_crown_d", "tree_wall_buffer", "tree_spacing", "cell 2.5x10", "window_setback (SanPiN, secondary)",
                         "guest_gap", "patch_gap", "underground parking: places only, area norm not set"],
@@ -290,7 +303,7 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
     cells_out = [unary_union(pt["cells"]) for pt in patches]
     return {"parking_cells": cells_out, "parking_patches": [
         {"house_index": pt["house_index"], "kind": pt["kind"], "places": len(pt["cells"]), "geometry": unary_union(pt["cells"])}
-        for pt in patches], "lawn": lawn, "trees": trees, "diagnostics": diag}
+        for pt in patches], "lawn": lawn, "trees": trees, "diagnostics": diag, "roads": roads}
 
 
 # ---------------------------------------------------------------------------
@@ -343,8 +356,21 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
             for t in roads["turnarounds"]:
                 road_rows.append({"block_index": bid, "kind": "turnaround", "width_m": 15.0,
                                   "road_class": "turnaround", "geometry": t})
-        res = generate_landscape(geom, footprints, residents, p, house_residents=hres, roads=roads)
+        res = generate_landscape(geom, footprints, residents, p, house_residents=hres, roads=roads,
+                                 road_inputs=({"floors": fl, "services": sv, "params": RoadParams(floor_height=p.floor_height)} if roads is not None else None))
+        roads = res.get("roads")
+        if roads is not None:
+            res["diagnostics"]["roads"] = roads["diagnostics"]
+            road_rows[:] = [r_ for r_ in road_rows if r_["block_index"] != bid]
+            for c in roads["carriageways"]:
+                road_rows.append({"block_index": bid, "kind": "carriageway", "width_m": c["width"], "road_class": c["class"], "geometry": c["geometry"]})
+            for t in roads["turnarounds"]:
+                road_rows.append({"block_index": bid, "kind": "turnaround", "width_m": 15.0, "road_class": "turnaround", "geometry": t})
         d = res["diagnostics"]
+        from app.logic.layout_checks import check_layout
+        fl_ = [float(v) if v == v else 1.0 for v in inside["floors_count"]] if "floors_count" in inside.columns else [1.0] * len(footprints)
+        d["checks"] = check_layout(geom, footprints, fl_, None, roads, res, p)
+        d["checks_summary"] = {k: sum(1 for c in d["checks"] if c["status"] == k) for k in ("pass", "warn", "fail")}
         d["block_index"] = bid
         d["residents"] = round(residents)
         diag.append(d)
