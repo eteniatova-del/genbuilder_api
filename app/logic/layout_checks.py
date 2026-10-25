@@ -15,7 +15,7 @@ from app.logic.roads import RoadParams, fire_width_for
 BASIS = {
     "road_access_distance": "secondary", "road_width_fire": "secondary", "dead_end_limit": "norm",
     "roads_connected": "assumption", "turnaround_free": "secondary", "roads_no_overlap": "assumption",
-    "parking_near_road": "assumption", "parking_window_setback": "secondary", "parking_balance": "norm",
+    "parking_near_road": "assumption", "parking_window_setback": "secondary", "parking_balance": "norm", "parking_walk_distance": "norm", "parking_edu_setback": "secondary",
     "trees_buffers": "assumption", "green_norm": "secondary", "near_street_axis": "assumption",
 }
 BASIS_NOTE = {"norm": "норма (СП 42, текст проверен)", "secondary": "вторичный источник, первоисточник не сверен",
@@ -136,6 +136,32 @@ def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadPar
     out.append(_res("parking_window_setback", "Разрыв стоянки до окон по числу мест (СанПиН, вторичный источник)",
                     sum(1 for x in patches if x["kind"] == "surface"), viol,
                     "крупное пятно делится на части, разрыв считается по числу мест части (допущение)"))
+
+    # 8а. пешеходный подход от стоянки до дома: гостевые ≤200 м (СП 42 п. 8.125), постоянные ≤800 м (п. 8.113)
+    viol = []
+    for k, pt in enumerate(patches):
+        lim = p.walk_guest_m if pt["kind"] == "guest" else p.walk_permanent_m
+        hi = pt["house_index"]
+        dd = footprints[hi].distance(pt["geometry"]) if hi < n else 0.0
+        if dd > lim:
+            viol.append({"patch": k, "house": hi, "distance_m": round(dd, 1), "limit_m": lim})
+    out.append(_res("parking_walk_distance", "Пешеходный подход от стоянки до дома: гостевые до 200 м, постоянные до 800 м (СП 42 п. 8.125, 8.113)",
+                    len(patches), viol, "расстояние до контура дома, а не до входа (допущение: входы не заданы)"))
+
+    # 8б. разрывы стоянок до школ и детских садов (СанПиН, вторичный источник): 25 м до 10 мест, 50 м больше
+    edu = [i for i, nm in enumerate(services or []) if i < n and any(k in (nm or "").lower() for k in ("школа", "детский сад"))]
+    viol = []
+    for k, pt in enumerate(patches):
+        if pt["kind"] != "surface":
+            continue
+        need = _setback(pt["places"], p.edu_setback)
+        for i in edu:
+            dd = footprints[i].distance(pt["geometry"])
+            if dd + 0.01 < need:
+                viol.append({"patch": k, "edu_building": i, "places": pt["places"], "distance_m": round(dd, 1), "need_m": need})
+    out.append(_res("parking_edu_setback", "Разрыв открытой стоянки до школ и детских садов 25/50 м (СанПиН, вторичный источник)",
+                    sum(1 for x in patches if x["kind"] == "surface") * max(len(edu), 1) if edu else 0, viol,
+                    "применяется только к постоянным местам; для гостевых разрывы не устанавливаются (вторичный источник)"))
 
     # 9. баланс мест по домам
     viol = []

@@ -46,6 +46,8 @@ class GenParams(BaseModel):
     """Assumed storey height (m) used to convert floors to building height for fire-access road width; not a norm."""
     tree_crown_d: float = 15.0
     """Mature crown diameter (m) of the planted tree; assumption, not a norm (Acer platanoides: 15-20 m)."""
+    parking_layout: Literal["along_roads", "free"] = "along_roads"
+    """along_roads: roads are built first, surface parking patches are pressed to the road (no separate access roads); free: patches near the house, access road added if far."""
     road_style: Literal["minimal", "loop"] = "minimal"
     """Intra-block road scheme: minimal = shortest tree of fire access roads, dead ends only up to 150 m (SP 42, 8.49); loop = every dead end is closed by a second exit to the street (looped scheme, methodical guideline, secondary source)."""
     road_turn_penalty_m: float = 20.0

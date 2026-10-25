@@ -87,3 +87,29 @@ def test_qgis_script_accepts_scale_series(tmp_path, scale):
 
 def test_qgis_script_rejects_scale_outside_series(tmp_path):
     assert _export(tmp_path, 750).returncode != 0
+
+
+def _landscape(layout, services=None):
+    lp = LandscapeParams(parking_type="surface", roads_enabled=True, parking_layout=layout)
+    roads = generate_roads(BLOCK, HOUSES, [8] * 4)
+    res = generate_landscape(BLOCK, HOUSES, 600, lp, roads=roads, services=services,
+                             road_inputs={"floors": [8] * 4, "services": services, "params": RoadParams()})
+    return lp, roads, res
+
+
+def test_along_roads_patches_touch_the_road():
+    lp, roads, res = _landscape("along_roads")
+    road_u = unary_union([c["geometry"] for c in roads["carriageways"]])
+    patches = [x for x in res["parking_patches"] if x["kind"] == "surface"]
+    assert patches
+    near = [x for x in patches if x["geometry"].distance(road_u) <= lp.touch_tol + 0.01]
+    assert len(near) >= len(patches) * 0.5
+
+
+def test_parking_keeps_distance_to_school_and_walk_limits():
+    services = ["", "школа", "", ""]
+    lp, roads, res = _landscape("along_roads", services)
+    ch = {c["id"]: c for c in check_layout(BLOCK, HOUSES, [8] * 4, services, res["roads"], res, lp)}
+    assert ch["parking_edu_setback"]["status"] == "pass", ch["parking_edu_setback"]["violations"]
+    assert ch["parking_walk_distance"]["status"] == "pass", ch["parking_walk_distance"]["violations"]
+    assert ch["parking_walk_distance"]["basis"] == "norm"
