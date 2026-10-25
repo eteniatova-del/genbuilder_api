@@ -46,6 +46,20 @@ class GenParams(BaseModel):
     """Assumed storey height (m) used to convert floors to building height for fire-access road width; not a norm."""
     tree_crown_d: float = 15.0
     """Mature crown diameter (m) of the planted tree; assumption, not a norm (Acer platanoides: 15-20 m)."""
+    road_style: Literal["minimal", "loop"] = "minimal"
+    """Intra-block road scheme: minimal = shortest tree of fire access roads, dead ends only up to 150 m (SP 42, 8.49); loop = every dead end is closed by a second exit to the street (looped scheme, methodical guideline, secondary source)."""
+    road_turn_penalty_m: float = 20.0
+    """Assumption (not a norm): penalty for a 90-degree turn of a road, metres of equivalent length; larger value gives straighter roads."""
+    road_junction_penalty_m: float = 10.0
+    """Assumption (not a norm): penalty for a new junction, metres of equivalent length; larger value gives fewer branches."""
+    road_reuse_cost: float = 0.15
+    """Assumption (not a norm): relative cost of using an already built road, 0..1; smaller value gives more shared roads."""
+    parking_reach_m: float = 12.0
+    """Assumption (not a norm): a parking patch farther than this from a road gets its own access road; nearer patches use the existing road."""
+    parking_max_lot_places: int = 50
+    """Assumption (not a norm): a surface lot is split into lots of at most this number of places; the window setback is taken by lot size."""
+    norm_mode: Literal["extended", "strict"] = "extended"
+    """Reporting mode: extended = checks based on secondary sources and assumptions count as passed; strict = only checks based on a verified SP 42 text count as passed, the rest are reported as unverified."""
     service_projects_file: str = str( Path(__file__).resolve().parent / "service_projects.geojson")
     """path to service projects file with geometry and plot/building parameters"""
     seed: Optional[int] = None

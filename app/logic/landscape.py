@@ -49,6 +49,11 @@ class LandscapeParams:
     patch_gap: float = 2.5                             # ASSUMPTION: зазор между пятнами разных домов, м
     search_step: float = 5.0                           # шаг перебора позиций пятна, м
     max_lot_places: int = 50                           # ASSUMPTION: стоянки делятся на лоты не более N мест; разрыв от окон берётся по размеру лота
+    road_style: str = "minimal"                        # minimal | loop
+    road_turn_penalty: float = 20.0                    # ASSUMPTION, м эквивалентной длины
+    road_junction_penalty: float = 10.0                # ASSUMPTION, м эквивалентной длины
+    road_reuse_cost: float = 0.15                      # ASSUMPTION
+    norm_mode: str = "extended"                        # extended | strict (влияет на отчёт проверок)
     # ASSUMPTION (вторичный источник): разрыв открытой стоянки до окон по числу мест
     window_setback: tuple = ((10, 10.0), (50, 15.0), (100, 25.0), (300, 35.0), (10**9, 50.0))
 
@@ -318,7 +323,22 @@ def landscape_params_from_generation(gen_params) -> LandscapeParams:
         parking_type=gen_params.parking_type,
         roads_enabled=gen_params.roads_enabled,
         floor_height=float(gen_params.floor_height_m),
+        road_style=gen_params.road_style,
+        road_turn_penalty=float(gen_params.road_turn_penalty_m),
+        road_junction_penalty=float(gen_params.road_junction_penalty_m),
+        road_reuse_cost=float(gen_params.road_reuse_cost),
+        parking_road_reach=float(gen_params.parking_reach_m),
+        max_lot_places=int(gen_params.parking_max_lot_places),
+        norm_mode=gen_params.norm_mode,
     )
+
+
+def road_params(p: "LandscapeParams"):
+    """RoadParams из LandscapeParams (единое место передачи параметров проездов)."""
+    from app.logic.roads import RoadParams
+    return RoadParams(floor_height=p.floor_height, road_style=p.road_style, turn_penalty=p.road_turn_penalty,
+                      junction_penalty=p.road_junction_penalty, reuse_cost=p.road_reuse_cost,
+                      patch_reach=p.parking_road_reach)
 
 
 def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: LandscapeParams):
@@ -346,10 +366,10 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
         hres = [x / la_per_person for x in las] if las and len(las) == len(footprints) else None
         roads = None
         if p.roads_enabled:
-            from app.logic.roads import RoadParams, generate_roads
+            from app.logic.roads import generate_roads
             fl = [float(v) if v == v else 1.0 for v in inside["floors_count"]] if "floors_count" in inside.columns else [1.0] * len(footprints)
             sv = [(x if isinstance(x, str) else "") for x in inside["service"]] if "service" in inside.columns else None
-            roads = generate_roads(geom, footprints, fl, sv, RoadParams(floor_height=p.floor_height))
+            roads = generate_roads(geom, footprints, fl, sv, road_params(p))
             for c in roads["carriageways"]:
                 road_rows.append({"block_index": bid, "kind": "carriageway", "width_m": c["width"],
                                   "road_class": c["class"], "geometry": c["geometry"]})
@@ -357,7 +377,7 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
                 road_rows.append({"block_index": bid, "kind": "turnaround", "width_m": 15.0,
                                   "road_class": "turnaround", "geometry": t})
         res = generate_landscape(geom, footprints, residents, p, house_residents=hres, roads=roads,
-                                 road_inputs=({"floors": fl, "services": sv, "params": RoadParams(floor_height=p.floor_height)} if roads is not None else None))
+                                 road_inputs=({"floors": fl, "services": sv, "params": road_params(p)} if roads is not None else None))
         roads = res.get("roads")
         if roads is not None:
             res["diagnostics"]["roads"] = roads["diagnostics"]
@@ -370,7 +390,7 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
         from app.logic.layout_checks import check_layout
         fl_ = [float(v) if v == v else 1.0 for v in inside["floors_count"]] if "floors_count" in inside.columns else [1.0] * len(footprints)
         d["checks"] = check_layout(geom, footprints, fl_, None, roads, res, p)
-        d["checks_summary"] = {k: sum(1 for c in d["checks"] if c["status"] == k) for k in ("pass", "warn", "fail")}
+        d["checks_summary"] = {k: sum(1 for c in d["checks"] if c["status"] == k) for k in ("pass", "unverified", "warn", "fail")}
         d["block_index"] = bid
         d["residents"] = round(residents)
         diag.append(d)

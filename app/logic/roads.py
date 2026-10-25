@@ -52,6 +52,8 @@ class RoadParams:
     turn_penalty: float = 20.0                # ASSUMPTION: штраф за поворот, м эквивалентной длины (К5)
     junction_penalty: float = 10.0            # ASSUMPTION: штраф за новую развилку, м (К4)
     wide_building_m: float = 18.0             # МУ «Квартал» ВГАСУ (вторичный): шире 18 м — подъезд с двух сторон
+    road_style: str = "minimal"               # minimal | loop: loop закрывает каждый тупик вторым выходом на улицу
+    patch_reach: float = 12.0                 # ASSUMPTION: пятно парковки ближе этого расстояния к проезду отдельного заезда не получает
     edu_two_accesses: bool = True             # СП 42 п. 6.4.49 (условное требование; применяется всегда)
 
 
@@ -221,9 +223,17 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
                 cells.append(c)
         return cells
 
-    order = sorted(range(len(accesses)), key=lambda i: min([db_all[a] for a in accesses[i]] or [1e9]))
+    bkey = lambda i: min([db_all[a] for a in accesses[i]] or [1e9])
+    order = sorted(range(n), key=bkey)
+    patch_order = sorted(range(n, len(accesses)), key=bkey)
     paths, served = {}, {}
-    for i in order:
+    for i in order + patch_order:
+        if i >= n and accesses[i] and on_road.any():
+            # пятно парковки, уже находящееся рядом с проездом, отдельного заезда не получает
+            dpr = float(np.min(np.hypot(cell_xy[on_road, 0] - cell_xy[accesses[i][0], 0],
+                                        cell_xy[on_road, 1] - cell_xy[accesses[i][0], 1])))
+            if dpr <= p.patch_reach:
+                continue
         for k, a in enumerate(accesses[i]):
             tg = np.where(on_road | street_mask)[0]
             cells = solve([a], tg)
@@ -280,14 +290,18 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
 
     # К6: тупики длиннее предела закрываем вторым выходом на улицу
     extra = []
-    for _round in range(4):
+    for _round in range(6):
         all_paths = list(paths.values()) + extra
-        bad = [x for x in dead_ends(adjacency(all_paths)) if x[1] > p.dead_end_max]
+        limit = 0.0 if p.road_style == "loop" else p.dead_end_max
+        def _patch_only(ch):
+            who_ = set().union(*[served.get(v, set()) for v in ch]) if ch else set()
+            return bool(who_) and min(who_) >= n and p.road_style == "loop"
+        bad = [x for x in dead_ends(adjacency(all_paths)) if x[1] > limit and not _patch_only(x[2])]
         if not bad:
             break
         bad.sort(key=lambda x: -x[1])
         changed = False
-        for lf, total, chain in bad[:6]:
+        for lf, total, chain in bad[:12]:
             acc_len, mid = 0.0, chain[0]
             for a_, b_ in zip(chain[:-1], chain[1:]):
                 acc_len += seg_len(a_, b_)

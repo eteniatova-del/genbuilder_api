@@ -11,10 +11,31 @@ from app.logic.landscape import _setback
 from app.logic.roads import RoadParams, fire_width_for
 
 
+# основание каждой проверки: norm — текст СП 42.13330 проверен; secondary — вторичный источник; assumption — допущение модели
+BASIS = {
+    "road_access_distance": "secondary", "road_width_fire": "secondary", "dead_end_limit": "norm",
+    "roads_connected": "assumption", "turnaround_free": "secondary", "roads_no_overlap": "assumption",
+    "parking_near_road": "assumption", "parking_window_setback": "secondary", "parking_balance": "norm",
+    "trees_buffers": "assumption", "green_norm": "secondary", "near_street_axis": "assumption",
+}
+BASIS_NOTE = {"norm": "норма (СП 42, текст проверен)", "secondary": "вторичный источник, первоисточник не сверен",
+              "assumption": "допущение модели, не норма"}
+
+
 def _res(cid, title, checked, viol, note="", warn_only=False):
     status = "pass" if not viol else ("warn" if warn_only else "fail")
-    return {"id": cid, "title": title, "status": status, "checked": checked,
-            "violations_count": len(viol), "violations": viol[:10], "note": note}
+    basis = BASIS.get(cid, "assumption")
+    return {"id": cid, "title": title, "status": status, "checked": checked, "basis": basis,
+            "basis_note": BASIS_NOTE[basis], "violations_count": len(viol), "violations": viol[:10], "note": note}
+
+
+def _apply_norm_mode(out, mode):
+    """strict: пройденная проверка, опирающаяся не на проверенный текст СП 42, помечается unverified."""
+    if mode == "strict":
+        for c in out:
+            if c["status"] == "pass" and c["basis"] != "norm":
+                c["status"] = "unverified"
+    return out
 
 
 def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadParams | None = None):
@@ -135,7 +156,8 @@ def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadPar
             viol.append({"tree": k, "reason": "closer than 2 m to carriageway (СП 42 табл. 6.3)", "m": round(t.distance(road_u), 1)})
         elif pu is not None and t.distance(pu) < 0.7 - 0.01:
             viol.append({"tree": k, "reason": "closer than 0.7 m to parking", "m": round(t.distance(pu), 1)})
-    out.append(_res("trees_buffers", "Деревья: 5,0 м (по кроне) от стен, 2,0 м от проезжей части, 0,7 м от стоянок", len(trees), viol))
+    out.append(_res("trees_buffers", "Деревья: 5,0 м (по кроне) от стен, 2,0 м от проезжей части, 0,7 м от стоянок", len(trees), viol,
+                    "2,0 и 0,7 м — СП 42 табл. 6.3; отступ от стен по кроне — допущение"))
 
     # 11. норма озеленения
     out.append(_res("green_norm", "Площадь газона не меньше нормы (3,0 м2/чел. по СП 476, сверить)", 1,
@@ -150,4 +172,4 @@ def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadPar
     out.append(_res("near_street_axis", "Здания ближе 8 м к границе квартала (оси улицы)", n, viol,
                     "граница квартала = ось улицы; проезжая часть улицы не вычитается (допущение), реальный отступ от красной линии не проверяется",
                     warn_only=True))
-    return out
+    return _apply_norm_mode(out, getattr(p, "norm_mode", "extended"))
