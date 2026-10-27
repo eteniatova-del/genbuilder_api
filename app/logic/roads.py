@@ -48,6 +48,7 @@ class RoadParams:
     high_building_m: float = 28.0
     dead_end_max: float = 150.0               # СП 42 п. 8.49
     turnaround: float = 15.0                  # СП 4.13130 (вторичный): 15 x 15 м; СП 42 п. 8.50
+    stub_m: float = 5.0                       # ASSUMPTION: короткий отросток от сквозного проезда не считается тупиком (ни закрытия, ни площадки)
     turnaround_reach: float = 25.0            # ASSUMPTION: если у конца тупика места нет, площадка ищется вдоль проезда не дальше, м
     reuse_cost: float = 0.15                  # ASSUMPTION: относительная стоимость прохода по уже построенному проезду
     turn_penalty: float = 20.0                # ASSUMPTION: штраф за поворот, м эквивалентной длины (К5)
@@ -297,7 +298,7 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
         def _patch_only(ch):
             who_ = set().union(*[served.get(v, set()) for v in ch]) if ch else set()
             return bool(who_) and min(who_) >= n and p.road_style == "loop"
-        bad = [x for x in dead_ends(adjacency(all_paths)) if x[1] > limit and not _patch_only(x[2])]
+        bad = [x for x in dead_ends(adjacency(all_paths)) if x[1] > max(limit, p.stub_m) and not _patch_only(x[2])]
         if not bad:
             break
         bad.sort(key=lambda x: -x[1])
@@ -306,8 +307,8 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
             acc_len, mid = 0.0, chain[0]
             for a_, b_ in zip(chain[:-1], chain[1:]):
                 acc_len += seg_len(a_, b_)
-                if acc_len >= total / 2:
-                    mid = b_
+                if acc_len >= total / 2 and p.road_style != "loop":
+                    mid = b_            # minimal: выход от середины тупика; loop: от самого конца, чтобы тупика не осталось
                     break
             pen = np.zeros(nn, dtype=bool)
             pen[np.array(chain, dtype=np.int64)] = True
@@ -377,6 +378,8 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
     for lf, total, chain in final:
         x, y = cell_xy[lf]
         who_ = set().union(*[served.get(v, set()) for v in chain]) if chain else set()
+        if total <= p.stub_m:
+            continue          # короткий отросток у сквозного проезда: разворот выполняется на самом проезде
         if who_ and min(who_) >= n and total <= 50.0:
             continue          # ASSUMPTION: короткий заезд только к парковке (не пожарный проезд) без разворотной площадки
         def _fits(c_):
