@@ -70,3 +70,13 @@ def test_landscape_with_roads_keeps_parking_and_trees_off_the_road():
         assert c.intersection(ru).area < 1e-6
     for t in res["trees"]:
         assert t.distance(ru) >= 2.0 - 1e-6   # СП 42 табл. 6.3: 2,0 м от проезжей части
+
+
+def test_turnarounds_keep_wall_gap_and_violations_are_reported():
+    houses = HOUSES + [box(160, 100, 220, 118), box(60, 120, 80, 160)]
+    for style in ("minimal", "loop"):
+        res = generate_roads(BLOCK, houses, [5] * len(houses), p=RoadParams(road_style=style))
+        bu = unary_union(houses)
+        viol = res["diagnostics"]["turnaround_violations"]
+        far = [t for t in res["turnarounds"] if t.distance(bu) < 5.0 - 0.5]
+        assert len(far) == len(viol)         # каждое нарушение отступа попадает в диагностику

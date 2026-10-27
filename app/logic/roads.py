@@ -48,6 +48,7 @@ class RoadParams:
     high_building_m: float = 28.0
     dead_end_max: float = 150.0               # СП 42 п. 8.49
     turnaround: float = 15.0                  # СП 4.13130 (вторичный): 15 x 15 м; СП 42 п. 8.50
+    turnaround_reach: float = 25.0            # ASSUMPTION: если у конца тупика места нет, площадка ищется вдоль проезда не дальше, м
     reuse_cost: float = 0.15                  # ASSUMPTION: относительная стоимость прохода по уже построенному проезду
     turn_penalty: float = 20.0                # ASSUMPTION: штраф за поворот, м эквивалентной длины (К5)
     junction_penalty: float = 10.0            # ASSUMPTION: штраф за новую развилку, м (К4)
@@ -113,7 +114,7 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
     p = p or RoadParams()
     n = len(buildings)
     diag = {"buildings": n, "unreachable": [], "dead_end_violations": [], "road_length_m": 0.0,
-            "max_dead_end_m": 0.0, "through_links_added": 0, "turnarounds": 0, "junctions": 0, "dead_ends": 0,
+            "max_dead_end_m": 0.0, "turnaround_violations": [], "through_links_added": 0, "turnarounds": 0, "junctions": 0, "dead_ends": 0,
             "grid_angle_deg": 0.0, "assumptions": [
                 "floor_height 3.0 m", "wall gap = middle of range", "turn penalty 20 m, junction penalty 10 m",
                 "rectilinear raster network oriented to dominant building direction",
@@ -353,10 +354,12 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
         if len(run) >= 2:
             lines_by_w.setdefault(run_w, []).append(LineString(run))
     carriageways = []
+    road_polys = []
     for w, segs in sorted(lines_by_w.items()):
         poly = unary_union([sg.buffer(w / 2.0, cap_style=3, join_style=2) for sg in segs]).difference(bu)
         if pu is not None:
             poly = poly.difference(pu)
+        road_polys.append(poly)
         carriageways.append({"width": w, "class": "main" if w >= p.main_width else "secondary", "geometry": Rinv(poly)})
     diag["road_length_m"] = round(total_len, 1)
 
@@ -366,27 +369,42 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
     h = p.turnaround / 2.0
     cands = sorted(((dx, dy) for dx in np.arange(-h, h + 1e-6, p.cell) for dy in np.arange(-h, h + 1e-6, p.cell)),
                    key=lambda t: hypot(*t))
+    reach = max(p.turnaround_reach, h)
+    cands_far = sorted(((dx, dy) for dx in np.arange(-reach, reach + 1e-6, p.cell) for dy in np.arange(-reach, reach + 1e-6, p.cell)),
+                       key=lambda t: hypot(*t))
+    road_u = unary_union(road_polys) if road_polys else Point(0, 0).buffer(0)
     turn = []
     for lf, total, chain in final:
         x, y = cell_xy[lf]
         who_ = set().union(*[served.get(v, set()) for v in chain]) if chain else set()
         if who_ and min(who_) >= n and total <= 50.0:
             continue          # ASSUMPTION: короткий заезд только к парковке (не пожарный проезд) без разворотной площадки
-        sq = None
-        for dx, dy in cands:
-            c_ = box(x + dx - h, y + dy - h, x + dx + h, y + dy + h)
+        def _fits(c_):
             if bu.distance(c_) < p.wall_gap_low[0] - 1e-6:
-                continue
+                return False
             if pu is not None and pu.intersection(c_).area > 1e-6:
-                continue
-            if not block_r.contains(c_):
-                continue
-            sq = c_
-            break
+                return False
+            return block_r.contains(c_)
+
+        sq = None
+        for dx, dy in cands:                       # 1) площадка накрывает конец тупика
+            c_ = box(x + dx - h, y + dy - h, x + dx + h, y + dy + h)
+            if _fits(c_):
+                sq = c_
+                break
+        if sq is None:                             # 2) площадка примыкает к проезду недалеко от конца тупика
+            near = road_u.intersection(Point(x, y).buffer(p.turnaround_reach))
+            for dx, dy in cands_far:
+                c_ = box(x + dx - h, y + dy - h, x + dx + h, y + dy + h)
+                if _fits(c_) and c_.intersects(near):
+                    sq = c_
+                    break
         if sq is None:
             sq = box(x - h, y - h, x + h, y + h).difference(bu)
             if pu is not None:
                 sq = sq.difference(pu)
+            diag["turnaround_violations"].append(
+                {"leaf_xy": [round(float(x), 1), round(float(y), 1)], "wall_gap_m": round(float(bu.distance(sq)), 1)})
         turn.append(Rinv(sq))
         if total > p.dead_end_max:
             diag["dead_end_violations"].append({"leaf_xy": [round(float(x), 1), round(float(y), 1)], "dead_end_m": round(total, 1)})
