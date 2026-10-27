@@ -14,7 +14,7 @@ from iduconfig import Config
 from app.exceptions.http_exception_wrapper import http_exception
 from app.logic.physical_objects_service import PhysicalObjectsService
 from app.schema.dto import BlockFeatureCollection
-from app.dependencies import UrbanDBAPI
+from app.api.urbandb_api_gateway import UrbanDBAPI
 from app.logic.generation_params import ParamsProvider
 
 from app.logic.building_params import (
