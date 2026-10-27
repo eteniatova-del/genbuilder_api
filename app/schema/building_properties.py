@@ -25,6 +25,10 @@ class PropertyLabel(BaseModel):
             "falsy value."
         ),
     )
+    landscape_only: bool = Field(
+        default=False,
+        description="Property is present only when `landscape_enabled` is set in the generation parameters.",
+    )
 
 
 class BuildingPropertiesSchema(BaseModel):
@@ -45,6 +49,17 @@ _PROPERTIES: Dict[str, PropertyLabel] = {
     "capacity": PropertyLabel(label="Мощность сервиса", kind="number", unit="мест"),
     "broke_restriction_zone": PropertyLabel(
         label="Нарушение нормативных отступов", kind="boolean"
+    ),
+    "parking_class": PropertyLabel(label="Вид парковки дома", kind="enum", landscape_only=True),
+    "has_underground_parking": PropertyLabel(label="Есть подземная парковка", kind="boolean", landscape_only=True),
+    "underground_parking_places": PropertyLabel(
+        label="Подземных машино-мест", kind="integer", unit="мест", landscape_only=True
+    ),
+    "surface_parking_places": PropertyLabel(
+        label="Наземных постоянных машино-мест", kind="integer", unit="мест", landscape_only=True
+    ),
+    "guest_parking_places": PropertyLabel(
+        label="Гостевых машино-мест", kind="integer", unit="мест", landscape_only=True
     ),
     "is_excluded": PropertyLabel(
         label="Существующий объект", kind="boolean", excluded_only=True
@@ -85,10 +100,18 @@ _ZONE_VALUES: Dict[str, str] = {
     "unknown": "Не определена",
 }
 
+_PARKING_CLASS_VALUES: Dict[str, str] = {
+    "underground": "Только подземная",
+    "mixed": "Подземная и наземная",
+    "surface": "Только наземная",
+    "none": "Нет мест",
+}
+
 BUILDING_PROPERTIES_SCHEMA = BuildingPropertiesSchema(
     properties=_PROPERTIES,
     values={
         "building_type": _BUILDING_TYPE_VALUES,
         "zone": _ZONE_VALUES,
+        "parking_class": _PARKING_CLASS_VALUES,
     },
 )

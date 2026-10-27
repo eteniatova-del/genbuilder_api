@@ -220,3 +220,23 @@ def test_a_project_without_territory_is_not_found():
         asyncio.run(api.get_region_by_project(120, "user-token"))
 
     assert caught.value.status_code == 404
+
+
+def test_normatives_are_read_from_the_bundled_snapshot_without_calling_the_api(monkeypatch):
+    monkeypatch.setenv("SERVICE_NORMATIVES_FILE", "default")
+    api = _gateway(RuntimeError("the API must not be called"))
+
+    normatives = asyncio.run(api.get_normatives_for_territory(1))
+
+    assert api.handler.calls == []
+    assert list(normatives.columns) == NORMATIVE_COLUMNS
+    assert dict(zip(normatives["service_name"], normatives["service_capacity"])) == {
+        "Детский сад": 61, "Школа": 120, "Поликлиника": 13}
+
+
+def test_snapshot_rows_without_capacity_are_dropped(tmp_path, monkeypatch):
+    p = tmp_path / "n.json"
+    p.write_text('{"services": [{"service_id": 1, "service_name": "A", "service_capacity": 5}, {"service_id": 2, "service_name": "B", "service_capacity": null}]}', encoding="utf-8")
+    monkeypatch.setenv("SERVICE_NORMATIVES_FILE", str(p))
+    normatives = asyncio.run(_gateway([]).get_normatives_for_territory(1))
+    assert normatives["service_name"].tolist() == ["A"]

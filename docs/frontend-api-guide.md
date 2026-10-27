@@ -597,6 +597,12 @@ data: {"chat_id": "9f3a…", "assistant_message_id": null}
 
 То же в классическом режиме — поле `territory_id` в теле `POST /generate/by_territory`.
 
+**Нормативы из файла (заглушка).** Если задана переменная окружения
+`SERVICE_NORMATIVES_FILE` (путь к JSON или `default` — встроенный снимок нормативов
+Санкт-Петербурга `app/logic/service_normatives_spb.json`), нормативы читаются из файла,
+а UrbanDB API не вызывается; `territory_id` при этом нужен только для логики сервисов,
+снимок общий для территории.
+
 ---
 
 ## 5. Геослои: подложка и ссылки в истории
@@ -1030,6 +1036,59 @@ data: {"status":"queued","job_id":"01K2...","status_url":"https://facades.exampl
 
 ---
 
+### Озеленение, парковки, проезды (опционально)
+
+Эскизный расчёт благоустройства квартала после генерации зданий и сервисов. Включается
+в `generation_parameters`; по умолчанию выключен, ответ без `landscape_enabled` не меняется.
+Результат носит оценочный характер и не заменяет проектную документацию (текст
+оговорки приходит в `landscape_diagnostics.disclaimer`).
+Поля добавлены в ответы классических эндпоинтов генерации; поведение в чат-режиме (SSE) не проверялось.
+
+**Параметры (`generation_parameters`)**
+
+| Параметр | Значения / по умолчанию | Смысл |
+|---|---|---|
+| `landscape_enabled` | bool, `false` | Включить озеленение и парковки |
+| `housing_class` | `standard` \| `business`, `standard` | Класс жилья: общая площадь на жителя, число мест на квартиру (СП 42 табл. 6.1, 8.16) |
+| `persons_per_apartment` | число \| `null` | Если `null`, постоянные места считаются как 350 на 1000 жителей (СП 42 п. 8.113 прим. 2) |
+| `parking_type` | `underground` \| `surface` \| `mixed`, `mixed` | Вид парковки постоянных мест |
+| `parking_layout` | `along_roads` \| `free`, `along_roads` | `along_roads`: сначала проезды, пятна парковки примыкают к проезду |
+| `parking_reach_m` | число, `12.0` | Допущение: дальше этого расстояния пятно получает отдельный заезд |
+| `parking_max_lot_places` | целое, `50` | Допущение: предельный размер лота |
+| `roads_enabled` | bool, `false` | Внутриквартальные проезды (нужен `landscape_enabled`) |
+| `road_style` | `minimal` \| `loop`, `minimal` | `minimal` — кратчайшая сеть, тупики до 150 м; `loop` — тупики замыкаются вторым выходом |
+| `road_turn_penalty_m`, `road_junction_penalty_m`, `road_reuse_cost` | `20.0`, `10.0`, `0.15` | Допущения: штрафы поворота и развилки, стоимость прохода по готовому проезду |
+| `floor_height_m` | число, `3.0` | Допущение: высота этажа для пожарной ширины проезда |
+| `tree_crown_d` | число, `15.0` | Допущение: диаметр кроны дерева, м |
+| `shrubs_enabled` | bool, `true` | Кустарники |
+| `shrub_species` | список, все пять | `spirea`, `cotoneaster`, `barberry`, `lilac`, `rose` |
+| `shrub_wall_belt`, `shrub_parking_hedge` | bool, `true` | Пояс вдоль стен и живая изгородь вдоль пятен парковки |
+| `norm_mode` | `extended` \| `strict`, `extended` | `strict`: проверки, не опирающиеся на проверенный текст СП 42, получают статус `unverified` (на геометрию не влияет) |
+
+Значения, помеченные «допущение», нормой не заданы.
+
+**Поля ответа** (только при `landscape_enabled`)
+
+| Поле | Содержимое |
+|---|---|
+| `generated_greenery` | `FeatureCollection`: `properties.kind` = `lawn` (полигон), `tree` (точка), `shrub` (точка; `species`, `species_lat`, `crown_d_m`); у каждого `block_index` |
+| `generated_parking` | Полигоны, привязанные к дому (`house_index`): `surface`, `guest`, `underground` (контур дома, `places` — подземные места); ячейка 2,5 × 10 м (25 м² на место, СП 42 табл. 8.17) |
+| `generated_roads` | Только при `roads_enabled`: `kind` = `carriageway` (`width_m`, `road_class`: `main`/`secondary`) или `turnaround` |
+| `landscape_diagnostics` | `disclaimer` и `blocks[]`: потребность и размещение мест, доля подземных, дефициты, число деревьев и кустарников по видам, сводка проверок `checks_summary` (`pass`/`unverified`/`warn`/`fail`) и список `checks` |
+
+Каждая проверка в `checks` содержит `id`, `status`, `basis` (`norm` — текст СП 42
+проверен, `secondary` — вторичный источник, `assumption` — допущение модели),
+`violations_count` и примеры нарушений.
+
+**Подземные паркинги** отдельного слоя геометрии не имеют: подземные места
+показываются записью `kind = "underground"` в `generated_parking` и атрибутами
+самих зданий (см. 7.4), чтобы красить такие дома иначе.
+
+Кустарники: виды — те, что назвал Смольный в сообщении о посадках Комитета по
+благоустройству за 2024 год (кизильник, барбарис, сирень, спирея, роза парковая);
+расстояния посадки — СП 42 табл. 6.3 (1,5 м от стены, 1,0 м от проезжей части,
+0,5 м от тротуара и стоянки); размеры кустов по видам — допущения.
+
 ## 7. Свойства зданий в ответе
 
 ### 7.1. Состав `properties`
@@ -1068,6 +1127,21 @@ data: {"status":"queued","job_id":"01K2...","status_url":"https://facades.exampl
 файлом `buildings_file`. Помечаются они так же (`is_excluded: true`), но
 `physical_object_id` у них `null`, если его не было в присланных `properties`.
 
+### 7.4. Поля парковки (только при `landscape_enabled`)
+
+У зданий жилых кварталов, для которых посчитана парковка, добавляются:
+
+| Поле | Тип | Смысл |
+|---|---|---|
+| `parking_class` | enum | `underground` (только подземная), `mixed`, `surface`, `none` |
+| `has_underground_parking` | boolean | У дома есть подземные места |
+| `underground_parking_places` | integer | Подземных машино-мест |
+| `surface_parking_places` | integer | Наземных постоянных мест, размещённых у дома |
+| `guest_parking_places` | integer | Гостевых мест, размещённых у дома |
+
+У зданий без расчёта (сервисы и т. п.) этих ключей нет или значения пустые. По
+`parking_class` и `has_underground_parking` удобно красить дома с подземной парковкой.
+
 ### 7.3. `GET /generate/properties_schema`
 
 Отдаёт русские подписи для имён свойств и для значений enum-полей. Авторизация
@@ -1089,6 +1163,7 @@ data: {"status":"queued","job_id":"01K2...","status_url":"https://facades.exampl
 - `kind` — как рендерить значение: `number`, `integer`, `boolean`, `enum`, `string`, `array`.
 - `unit` — единица измерения либо `null`.
 - `excluded_only` — поле есть только у исключённых объектов.
+- `landscape_only` — поле есть только при `landscape_enabled` (см. 7.4).
 - `values` — словари подписей для полей с `kind: "enum"`.
 
 ---

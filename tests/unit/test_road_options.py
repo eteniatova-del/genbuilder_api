@@ -113,3 +113,23 @@ def test_parking_keeps_distance_to_school_and_walk_limits():
     assert ch["parking_edu_setback"]["status"] == "pass", ch["parking_edu_setback"]["violations"]
     assert ch["parking_walk_distance"]["status"] == "pass", ch["parking_walk_distance"]["violations"]
     assert ch["parking_walk_distance"]["basis"] == "norm"
+
+
+def test_shrubs_follow_norm_distances_and_use_listed_species():
+    lp, roads, res = _landscape("along_roads")
+    shrubs = res["shrubs"]
+    assert len(shrubs) > 20
+    assert {x["species_id"] for x in shrubs} <= {t[0] for t in lp.shrub_species}
+    ch = {c["id"]: c for c in check_layout(BLOCK, HOUSES, [8] * 4, None, res["roads"], res, lp)}
+    assert ch["shrubs_buffers"]["status"] == "pass", ch["shrubs_buffers"]["violations"]
+    assert ch["shrubs_buffers"]["basis"] == "norm"
+
+
+def test_shrubs_can_be_switched_off_and_limited_to_species():
+    lp = LandscapeParams(parking_type="surface", roads_enabled=True, shrubs_enabled=False)
+    roads = generate_roads(BLOCK, HOUSES, [8] * 4)
+    res = generate_landscape(BLOCK, HOUSES, 600, lp, roads=roads, road_inputs={"floors": [8] * 4, "services": None, "params": RoadParams()})
+    assert res["shrubs"] == []
+    lp2 = LandscapeParams(parking_type="surface", roads_enabled=True, shrub_species_ids=("rose",))
+    res2 = generate_landscape(BLOCK, HOUSES, 600, lp2, roads=roads, road_inputs={"floors": [8] * 4, "services": None, "params": RoadParams()})
+    assert {x["species_id"] for x in res2["shrubs"]} == {"rose"}

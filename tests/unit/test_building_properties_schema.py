@@ -16,12 +16,20 @@ GENERATED_BUILDING_PROPERTIES = {
     "residents_number",
 }
 
+LANDSCAPE_ONLY_PROPERTIES = {
+    "parking_class",
+    "has_underground_parking",
+    "underground_parking_places",
+    "surface_parking_places",
+    "guest_parking_places",
+}
+
 EXCLUDED_ONLY_PROPERTIES = {"is_excluded", "physical_object_id"}
 
 
 def test_schema_covers_every_property_the_api_returns():
     assert set(BUILDING_PROPERTIES_SCHEMA.properties) == (
-        GENERATED_BUILDING_PROPERTIES | EXCLUDED_ONLY_PROPERTIES
+        GENERATED_BUILDING_PROPERTIES | LANDSCAPE_ONLY_PROPERTIES | EXCLUDED_ONLY_PROPERTIES
     )
 
 
@@ -61,3 +69,13 @@ def test_schema_round_trips_through_json():
     dumped = BUILDING_PROPERTIES_SCHEMA.model_dump()
 
     assert BuildingPropertiesSchema.model_validate(dumped) == BUILDING_PROPERTIES_SCHEMA
+
+
+def test_landscape_only_flag_marks_exactly_the_parking_properties():
+    flagged = {
+        name
+        for name, label in BUILDING_PROPERTIES_SCHEMA.properties.items()
+        if label.landscape_only
+    }
+
+    assert flagged == LANDSCAPE_ONLY_PROPERTIES

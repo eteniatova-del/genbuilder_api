@@ -25,7 +25,8 @@ LAYERS = {
 }
 
 QGIS_TEMPLATE = '''# Скрипт для консоли Python в QGIS (создан export_qgis_project.py). Масштаб 1:{scale}.
-from qgis.core import QgsProject, QgsVectorLayer, QgsCoordinateReferenceSystem, QgsFillSymbol, QgsMarkerSymbol, QgsUnitTypes
+from qgis.core import (QgsProject, QgsVectorLayer, QgsCoordinateReferenceSystem, QgsFillSymbol, QgsMarkerSymbol, QgsUnitTypes,
+                       QgsCategorizedSymbolRenderer, QgsRendererCategory, QgsProperty, QgsSymbolLayer)
 from qgis.utils import iface
 import os
 
@@ -54,6 +55,24 @@ for name, color in {layers}:
         trees.renderer().setSymbol(sym)
         project.addMapLayer(trees)
         layers.append(trees)
+        shr = QgsVectorLayer(path, "shrubs", "ogr")
+        shr.setSubsetString("kind = 'shrub'")
+        ssym = QgsMarkerSymbol.createSimple({{"name": "circle", "color": "#7fb04a", "outline_color": "#4d7a26"}})
+        ssym.setSizeUnit(QgsUnitTypes.RenderMapUnits)
+        ssym.setSize(1.5)
+        ssym.symbolLayer(0).setDataDefinedProperty(QgsSymbolLayer.PropertySize, QgsProperty.fromField("crown_d_m"))
+        shr.renderer().setSymbol(ssym)
+        project.addMapLayer(shr)
+        layers.append(shr)
+    elif name == "buildings" and lyr.fields().indexFromName("parking_class") >= 0:
+        # дома с подземным паркингом окрашены иначе (атрибуты parking_class, underground_parking_places)
+        def fsym(c):
+            return QgsFillSymbol.createSimple({{"color": c, "outline_color": "#333333", "outline_width": "0.1"}})
+        cats = [QgsRendererCategory("underground", fsym("#a0522d"), "подземная парковка"),
+                QgsRendererCategory("mixed", fsym("#cd853f"), "подземная и наземная"),
+                QgsRendererCategory("surface", fsym("#e9c9a0"), "только наземная"),
+                QgsRendererCategory("", fsym(color), "прочие (сервисы и др.)")]
+        lyr.setRenderer(QgsCategorizedSymbolRenderer("parking_class", cats))
     else:
         lyr.renderer().setSymbol(QgsFillSymbol.createSimple({{"color": color, "outline_color": "#333333", "outline_width": "0.1"}}))
     project.addMapLayer(lyr)

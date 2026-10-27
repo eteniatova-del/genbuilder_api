@@ -1,3 +1,6 @@
+import json
+import os
+from pathlib import Path
 from typing import Optional
 
 import aiohttp
@@ -11,6 +14,8 @@ from app.api.api_error_handler import APIHandler
 from app.exceptions.http_exception_wrapper import http_exception
 
 NORMATIVE_COLUMNS = ["service_id", "service_name", "service_capacity"]
+NORMATIVES_FILE_KEY = "SERVICE_NORMATIVES_FILE"
+DEFAULT_NORMATIVES_FILE = Path(__file__).resolve().parent.parent / "logic" / "service_normatives_spb.json"
 
 
 class UrbanDBAPI:
@@ -114,12 +119,44 @@ class UrbanDBAPI:
             raise http_exception(404, f"No territory id found for project {project_id}")
         return region_id
 
+    def _normatives_file(self) -> Optional[Path]:
+        """Path of the normatives snapshot used instead of the Urban API, or None.
+
+        Set SERVICE_NORMATIVES_FILE to a JSON path, or to "default" to use the bundled
+        Saint Petersburg snapshot (app/logic/service_normatives_spb.json).
+        """
+        raw = os.environ.get(NORMATIVES_FILE_KEY)
+        if not raw:
+            try:
+                raw = self.config.get(NORMATIVES_FILE_KEY)
+            except Exception:  # the key is optional; a config without it must not break the API mode
+                raw = None
+        if not raw:
+            return None
+        return DEFAULT_NORMATIVES_FILE if str(raw).strip().lower() == "default" else Path(str(raw))
+
+    @staticmethod
+    def normatives_from_file(path: Path) -> pd.DataFrame:
+        """Read a normatives snapshot: {"services": [{service_id, service_name, service_capacity}, ...]}."""
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        rows = [{"service_id": x.get("service_id"), "service_name": x.get("service_name"),
+                 "service_capacity": x.get("service_capacity")} for x in data.get("services", [])]
+        frame = pd.DataFrame(rows, columns=NORMATIVE_COLUMNS)
+        return frame.dropna(subset=["service_capacity"]).reset_index(drop=True)
+
     async def get_normatives_for_territory(self, territory_id: int, token: Optional[str] = None):
         """Service capacity normatives per 1000 residents of a territory.
 
         The endpoint is public, so the file mode calls it without a token. A territory
-        without normatives gives an empty frame with the same columns.
+        without normatives gives an empty frame with the same columns. With
+        SERVICE_NORMATIVES_FILE set, the normatives are read from that file and the
+        Urban API is not called (the snapshot is territory-wide, territory_id is ignored).
         """
+        snapshot = self._normatives_file()
+        if snapshot is not None:
+            logger.info(f"Service normatives for territory {territory_id} are read from file {snapshot}")
+            return self.normatives_from_file(snapshot)
         api_url = f"{self.base_url}/api/v1/territory/{territory_id}/normatives?last_only=true&include_child_territories=false&cities_only=false"
         logger.info(f"Fetching service normatives from API: {api_url}")
         headers = self._make_headers(token=token) if token else {}

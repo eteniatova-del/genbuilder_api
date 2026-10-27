@@ -15,7 +15,7 @@ from app.logic.roads import RoadParams, fire_width_for
 BASIS = {
     "road_access_distance": "secondary", "road_width_fire": "secondary", "dead_end_limit": "norm",
     "roads_connected": "assumption", "turnaround_free": "secondary", "roads_no_overlap": "assumption",
-    "parking_near_road": "assumption", "parking_window_setback": "secondary", "parking_balance": "norm", "parking_walk_distance": "norm", "parking_edu_setback": "secondary",
+    "parking_near_road": "assumption", "parking_window_setback": "secondary", "parking_balance": "norm", "shrubs_buffers": "norm", "parking_walk_distance": "norm", "parking_edu_setback": "secondary",
     "trees_buffers": "assumption", "green_norm": "secondary", "near_street_axis": "assumption",
 }
 BASIS_NOTE = {"norm": "норма (СП 42, текст проверен)", "secondary": "вторичный источник, первоисточник не сверен",
@@ -184,6 +184,20 @@ def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadPar
             viol.append({"tree": k, "reason": "closer than 0.7 m to parking", "m": round(t.distance(pu), 1)})
     out.append(_res("trees_buffers", "Деревья: 5,0 м (по кроне) от стен, 2,0 м от проезжей части, 0,7 м от стоянок", len(trees), viol,
                     "2,0 и 0,7 м — СП 42 табл. 6.3; отступ от стен по кроне — допущение"))
+
+    # 10а. кустарники: 1,5 м от стен, 1,0 м от проезжей части, 0,5 м от стоянок (СП 42 табл. 6.3, текст проверен)
+    viol = []
+    shrubs = res.get("shrubs", [])
+    for k, sh in enumerate(shrubs):
+        g = sh["geometry"]
+        if bu is not None and g.distance(bu) < p.shrub_wall_buffer - 0.01:
+            viol.append({"shrub": k, "reason": "closer than 1.5 m to wall", "m": round(g.distance(bu), 2)})
+        elif road_u is not None and g.distance(road_u) < p.shrub_road_buffer - 0.01:
+            viol.append({"shrub": k, "reason": "closer than 1.0 m to carriageway", "m": round(g.distance(road_u), 2)})
+        elif pu is not None and g.distance(pu) < p.shrub_parking_buffer - 0.01:
+            viol.append({"shrub": k, "reason": "closer than 0.5 m to parking", "m": round(g.distance(pu), 2)})
+    out.append(_res("shrubs_buffers", "Кустарники: 1,5 м от стен, 1,0 м от проезжей части, 0,5 м от стоянок (СП 42 табл. 6.3)", len(shrubs), viol,
+                    "размеры кустов по видам и шаг — допущения; расстояния — норма"))
 
     # 11. норма озеленения
     out.append(_res("green_norm", "Площадь газона не меньше нормы (3,0 м2/чел. по СП 476, сверить)", 1,

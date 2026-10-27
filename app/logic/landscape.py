@@ -15,6 +15,7 @@
   разрывы стоянок от окон (СанПиН 2.2.1/2.1.1.1200-03 табл. 7.1.1 по вторичному источнику), ячейка парковки 2,5 x 10 м.
 Зачётная площадь озеленения = газон (решение автора); деревья/кустарники размещаются на газоне с буферами.
 """
+import pandas as pd
 from dataclasses import dataclass, field
 from math import ceil, sqrt
 from shapely.geometry import Polygon, Point, box
@@ -49,6 +50,24 @@ class LandscapeParams:
     patch_gap: float = 2.5                             # ASSUMPTION: зазор между пятнами разных домов, м
     search_step: float = 5.0                           # шаг перебора позиций пятна, м
     max_lot_places: int = 50                           # ASSUMPTION: стоянки делятся на лоты не более N мест; разрыв от окон берётся по размеру лота
+    shrubs_enabled: bool = True
+    # Виды: сообщение Смольного от 14.11.2024 (кустарники, высаженные Комитетом по благоустройству в 2024 г.: кизильник, барбарис, сирень, спирея, роза парковая).
+    # Размеры куста и шаг — ASSUMPTION: в найденных источниках размеров по видам нет. (id, название, латинское название, диаметр куста м, шаг посадки м)
+    shrub_species: tuple = (
+        ("spirea", "Спирея", "Spiraea", 1.5, 1.5),
+        ("cotoneaster", "Кизильник блестящий", "Cotoneaster lucidus", 1.5, 1.5),
+        ("barberry", "Барбарис", "Berberis", 1.5, 1.5),
+        ("lilac", "Сирень обыкновенная", "Syringa vulgaris", 3.0, 3.0),
+        ("rose", "Роза парковая", "Rosa", 1.2, 1.2),
+    )
+    shrub_species_ids: tuple = ("spirea", "cotoneaster", "barberry", "lilac", "rose")
+    shrub_wall_buffer: float = 1.5                     # СП 42 табл. 6.3: кустарник до наружной стены, м (до оси куста)
+    shrub_road_buffer: float = 1.0                     # СП 42 табл. 6.3: до края проезжей части
+    shrub_parking_buffer: float = 0.5                  # СП 42 табл. 6.3: до края тротуара, дорожки и площадки хранения транспортных средств
+    shrub_belt_offset: float = 2.5                     # ASSUMPTION: пояс кустарников вдоль стен на этом расстоянии от стены (норма 1,5 м плюс запас)
+    shrub_hedge_offset: float = 1.0                    # ASSUMPTION: живая изгородь вдоль пятна парковки на этом расстоянии от края пятна
+    shrub_wall_belt: bool = True
+    shrub_parking_hedge: bool = True
     parking_layout: str = "along_roads"                # along_roads: пятна примыкают к проезду (сначала проезды, потом парковки) | free
     edu_setback: tuple = ((10, 25.0), (10**9, 50.0))   # вторичный источник (СанПиН 2.2.1/2.1.1.1200-03 табл. 7.1.1): стоянки до школ и детских учреждений, по числу мест
     walk_permanent_m: float = 800.0                    # СП 42 п. 8.113: пешеходная доступность постоянного хранения (реконструкция: 1200 м)
@@ -239,6 +258,65 @@ def _place_trees(lawn, buildings_u, parking_u, p, carriageway=None, walkways=Non
     return pts, wall, step
 
 
+def _place_shrubs(lawn, buildings, patches_geoms, road_u, walkways, p):
+    """Кустарники: пояс вдоль стен зданий и живая изгородь вдоль пятен парковки (СП 42 табл. 6.3 по расстояниям).
+
+    Возвращает список {geometry, species, species_lat, crown_d}. Виды чередуются по зданиям и пятнам."""
+    if not p.shrubs_enabled or lawn is None or lawn.is_empty:
+        return []
+    table = [t for t in p.shrub_species if t[0] in p.shrub_species_ids]
+    if not table:
+        return []
+    zone = lawn
+    if buildings:
+        zone = zone.difference(unary_union(buildings).buffer(p.shrub_wall_buffer))
+    if road_u is not None and not road_u.is_empty:
+        zone = zone.difference(road_u.buffer(p.shrub_road_buffer))
+    if patches_geoms:
+        zone = zone.difference(unary_union(patches_geoms).buffer(p.shrub_parking_buffer))
+    if walkways is not None and not walkways.is_empty:
+        zone = zone.difference(walkways.buffer(p.shrub_parking_buffer))
+    if zone.is_empty:
+        return []
+    out, grid = [], {}
+
+    def free_of_neighbours(pt, step):
+        cx, cy = int(pt.x // step), int(pt.y // step)
+        for gx in (cx - 1, cx, cx + 1):
+            for gy in (cy - 1, cy, cy + 1):
+                for q in grid.get((round(step, 2), gx, gy), ()):
+                    if q.distance(pt) < 0.8 * step:
+                        return False
+        return True
+
+    def along(line_geom, tab):
+        sid, name, lat, crown, step = tab
+        pieces = [line_geom] if line_geom.geom_type == "LineString" else list(getattr(line_geom, "geoms", []))
+        for ln in pieces:
+            if ln.geom_type != "LineString" or ln.length < step * 0.5:
+                continue
+            d = step / 2.0
+            while d <= ln.length:
+                pt = ln.interpolate(d)
+                if zone.contains(pt) and free_of_neighbours(pt, step):
+                    out.append({"geometry": pt, "species": name, "species_id": sid, "species_lat": lat, "crown_d": crown})
+                    grid.setdefault((round(step, 2), int(pt.x // step), int(pt.y // step)), []).append(pt)
+                d += step
+
+    k = 0
+    if p.shrub_wall_belt:
+        for b in buildings:
+            ring = b.buffer(p.shrub_belt_offset).boundary
+            along(ring.intersection(zone), table[k % len(table)])
+            k += 1
+    if p.shrub_parking_hedge:
+        for g in patches_geoms:
+            ring = g.buffer(p.shrub_hedge_offset).boundary
+            along(ring.intersection(zone), table[k % len(table)])
+            k += 1
+    return out
+
+
 def generate_landscape(block: Polygon, buildings: list, residents: float, p: LandscapeParams | None = None,
                        carriageway=None, walkways=None, house_residents: list | None = None, roads=None, road_inputs: dict | None = None,
                        services: list | None = None):
@@ -324,6 +402,7 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
         lawn_area = lawn.area - d["platforms_reserved_m2"]
         carriageway = road_u
     trees, wall, step = _place_trees(lawn, bu, parking_u, p, carriageway, walkways)
+    shrubs = _place_shrubs(lawn, buildings, [unary_union(pt["cells"]) for pt in patches], carriageway, walkways, p)
     houses_diag.sort(key=lambda h: h["house_index"])
     perm_surface = sum(h["permanent_surface_required"] for h in houses_diag)
 
@@ -340,16 +419,18 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
         "green_deficit_m2": round(max(0.0, d["green_required_m2"] - lawn_area), 1),
         "parking_deficit_surface": deficit,
         "trees": len(trees), "tree_wall_buffer_m": wall, "tree_spacing_m": step,
+        "shrubs": len(shrubs),
+        "shrubs_by_species": {n_: sum(1 for x in shrubs if x["species"] == n_) for n_ in sorted({x["species"] for x in shrubs})},
         "houses": houses_diag,
         "disclaimer": DISCLAIMER,
-        "assumptions": ["tree_crown_d", "tree_wall_buffer", "tree_spacing", "cell 2.5x10", "window_setback (SanPiN, secondary)",
+        "assumptions": ["shrub sizes and step by species", "shrub belt/hedge offsets", "tree_crown_d", "tree_wall_buffer", "tree_spacing", "cell 2.5x10", "window_setback (SanPiN, secondary)",
                         "guest_gap", "patch_gap", "underground parking: places only, area norm not set"],
     }
     # parking_cells: по одному полигону на пятно (объединение ячеек) — для деревьев и вывода
     cells_out = [unary_union(pt["cells"]) for pt in patches]
     return {"parking_cells": cells_out, "parking_patches": [
         {"house_index": pt["house_index"], "kind": pt["kind"], "places": len(pt["cells"]), "geometry": unary_union(pt["cells"])}
-        for pt in patches], "lawn": lawn, "trees": trees, "diagnostics": diag, "roads": roads}
+        for pt in patches], "lawn": lawn, "trees": trees, "shrubs": shrubs, "diagnostics": diag, "roads": roads}
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +451,10 @@ def landscape_params_from_generation(gen_params) -> LandscapeParams:
         road_reuse_cost=float(gen_params.road_reuse_cost),
         parking_road_reach=float(gen_params.parking_reach_m),
         parking_layout=gen_params.parking_layout,
+        shrubs_enabled=gen_params.shrubs_enabled,
+        shrub_species_ids=tuple(gen_params.shrub_species),
+        shrub_wall_belt=gen_params.shrub_wall_belt,
+        shrub_parking_hedge=gen_params.shrub_parking_hedge,
         max_lot_places=int(gen_params.parking_max_lot_places),
         norm_mode=gen_params.norm_mode,
     )
@@ -394,6 +479,7 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
     import geopandas as gpd
 
     greenery_rows, parking_rows, road_rows, diag = [], [], [], []
+    building_rows = {}
     for bid, (_, block) in enumerate(blocks_utm.iterrows()):
         geom = block.geometry
         if geom is None or geom.is_empty:
@@ -403,7 +489,9 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
         residents = la / la_per_person if la_per_person else 0.0
         if residents <= 0:
             continue
-        footprints = [g for g in inside.geometry if g is not None and not g.is_empty]
+        inside_valid = [(ix, g) for ix, g in zip(inside.index, inside.geometry) if g is not None and not g.is_empty]
+        footprints = [g for _, g in inside_valid]
+        b_index = [ix for ix, _ in inside_valid]
         las = [float(v) if v == v else 0.0 for v in inside["living_area"]] if "living_area" in inside.columns else []
         hres = [x / la_per_person for x in las] if las and len(las) == len(footprints) else None
         roads = None
@@ -441,10 +529,26 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
             greenery_rows.append({"block_index": bid, "kind": "lawn", "geometry": lawn})
         for t in res["trees"]:
             greenery_rows.append({"block_index": bid, "kind": "tree", "geometry": t})
+        for sh in res.get("shrubs", []):
+            greenery_rows.append({"block_index": bid, "kind": "shrub", "species": sh["species"],
+                                  "species_lat": sh["species_lat"], "crown_d_m": sh["crown_d"], "geometry": sh["geometry"]})
         for pt in res["parking_patches"]:
             parking_rows.append({"block_index": bid, "house_index": pt["house_index"],
                                  "kind": "surface" if pt["kind"] == "surface" else "guest",
                                  "places": pt["places"], "geometry": pt["geometry"]})
+        for hd_ in d.get("houses", []):                      # атрибуты зданий: парковка дома
+            ix = b_index[hd_["house_index"]] if hd_["house_index"] < len(b_index) else None
+            if ix is None:
+                continue
+            ug = int(hd_["permanent_underground"])
+            sf = int(hd_["permanent_surface"])
+            building_rows[ix] = {
+                "parking_class": "underground" if ug > 0 and sf == 0 else ("mixed" if ug > 0 else ("surface" if sf > 0 else "none")),
+                "has_underground_parking": ug > 0,
+                "underground_parking_places": ug,
+                "surface_parking_places": sf,
+                "guest_parking_places": int(hd_["guest_places"]),
+            }
         for hd_ in d.get("houses", []):                      # подземные места: контур дома, площадь по месту не нормируем
             if hd_["permanent_underground"] > 0:
                 parking_rows.append({"block_index": bid, "house_index": hd_["house_index"], "kind": "underground",
@@ -457,5 +561,6 @@ def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: Landscap
         else gpd.GeoDataFrame({"block_index": [], "kind": []}, geometry=[], crs=crs),
         "roads": gpd.GeoDataFrame(road_rows, geometry="geometry", crs=crs) if road_rows
         else gpd.GeoDataFrame({"block_index": [], "kind": []}, geometry=[], crs=crs),
+        "buildings": pd.DataFrame.from_dict(building_rows, orient="index") if building_rows else pd.DataFrame(),
         "diagnostics": diag,
     }

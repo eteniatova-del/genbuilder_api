@@ -1,0 +1,35 @@
+{
+  "territory_name": "Санкт-Петербург",
+  "retrieved_on": "2026-10-22",
+  "description": "Снимок нормативов UrbanDB для типов сервисов, представленных в стандартном service_projects.geojson. Значения используются для расчёта требуемой вместимости: round(service_capacity * population / 1000).",
+  "capacity_basis": "per_1000_residents",
+  "services": [
+    {
+      "service_id": 21,
+      "service_name": "Детский сад",
+      "service_capacity": 61,
+      "year": 2024,
+      "source": "modeled",
+      "normative_type": "parent",
+      "is_regulated": true
+    },
+    {
+      "service_id": 22,
+      "service_name": "Школа",
+      "service_capacity": 120,
+      "year": 2024,
+      "source": "modeled",
+      "normative_type": "parent",
+      "is_regulated": true
+    },
+    {
+      "service_id": 28,
+      "service_name": "Поликлиника",
+      "service_capacity": 13,
+      "year": 2024,
+      "source": "modeled",
+      "normative_type": "parent",
+      "is_regulated": true
+    }
+  ]
+}

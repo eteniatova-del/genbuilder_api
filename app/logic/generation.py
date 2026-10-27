@@ -915,6 +915,12 @@ class Genbuilder:
                 la_per_person,
                 landscape_params_from_generation(new_parameters),
             )
+            b_attrs = landscape.get("buildings")
+            if b_attrs is not None and len(b_attrs):
+                for col in b_attrs.columns:                      # атрибуты парковки дома (в т.ч. подземной) в свойства здания
+                    buildings_all.loc[b_attrs.index, col] = b_attrs[col]
+                if "has_underground_parking" in buildings_all.columns:
+                    buildings_all["has_underground_parking"] = buildings_all["has_underground_parking"].fillna(False).astype(bool)
             greenery_gdf = await asyncio.to_thread(landscape["greenery"].to_crs, 4326)
             parking_gdf = await asyncio.to_thread(landscape["parking"].to_crs, 4326)
             roads_gdf = await asyncio.to_thread(landscape["roads"].to_crs, 4326)

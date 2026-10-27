@@ -435,9 +435,9 @@ class BuildingFeatureCollection(BaseModel):
     generated_greenery: Optional[dict] = Field(
         default=None,
         description=(
-            "FeatureCollection with lawn polygons and tree points (`properties.kind`: "
-            "`lawn` | `tree`). Present only when `landscape_enabled` is set in the "
-            "generation parameters."
+            "FeatureCollection with lawn polygons, tree points and shrub points (`properties.kind`: "
+            "`lawn` | `tree` | `shrub`; shrubs carry `species`, `species_lat`, `crown_d_m`). Present only "
+            "when `landscape_enabled` is set in the generation parameters."
         ),
     )
     generated_parking: Optional[dict] = Field(

@@ -83,7 +83,7 @@ def test_apply_landscape_works_per_block_and_skips_blocks_without_residents():
     out = apply_landscape(blocks, houses, 18.0, LandscapeParams())
     assert len(out["diagnostics"]) == 1  # the second block has no buildings
     assert out["diagnostics"][0]["residents"] == 2000
-    assert set(out["greenery"]["kind"]) <= {"lawn", "tree"}
+    assert set(out["greenery"]["kind"]) <= {"lawn", "tree", "shrub"}
     assert set(out["parking"]["kind"]) <= {"surface", "guest", "underground"}
     assert out["greenery"].crs == blocks.crs
 
@@ -121,3 +121,17 @@ def test_parking_type_surface_reports_deficit_instead_of_going_underground():
     d = res["diagnostics"]
     assert d["underground_share"] == 0
     assert d["parking_deficit_surface"] > 0
+
+
+def test_apply_landscape_returns_parking_attributes_per_building():
+    blocks = gpd.GeoDataFrame({"zone": ["residential"]}, geometry=[BLOCK], crs=32636)
+    houses = gpd.GeoDataFrame({"living_area": [9000.0] * len(HOUSES)}, geometry=[h for h in HOUSES], crs=32636)
+    out = apply_landscape(blocks, houses, 18.0, LandscapeParams(parking_type="mixed"))
+    attrs = out["buildings"]
+    assert set(attrs.index) <= set(houses.index)
+    assert {"parking_class", "has_underground_parking", "underground_parking_places",
+            "surface_parking_places", "guest_parking_places"} <= set(attrs.columns)
+    assert (attrs["has_underground_parking"] == (attrs["underground_parking_places"] > 0)).all()
+    out_u = apply_landscape(blocks, houses, 18.0, LandscapeParams(parking_type="underground"))
+    assert out_u["buildings"]["has_underground_parking"].all()
+    assert set(out_u["buildings"]["parking_class"]) == {"underground"}

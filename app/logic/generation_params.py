@@ -3,7 +3,7 @@ import contextvars
 import contextlib
 
 from typing import Dict, Any, Iterator, Literal, Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GenParams(BaseModel):
@@ -46,6 +46,14 @@ class GenParams(BaseModel):
     """Assumed storey height (m) used to convert floors to building height for fire-access road width; not a norm."""
     tree_crown_d: float = 15.0
     """Mature crown diameter (m) of the planted tree; assumption, not a norm (Acer platanoides: 15-20 m)."""
+    shrubs_enabled: bool = True
+    """If True (with landscape_enabled), shrubs are placed along building walls and parking patches (distances: SP 42, table 6.3)."""
+    shrub_species: list[str] = Field(default_factory=lambda: ["spirea", "cotoneaster", "barberry", "lilac", "rose"])
+    """Shrub species used: spirea, cotoneaster, barberry, lilac, rose (named in the Smolny report of 14.11.2024); sizes per species are assumptions."""
+    shrub_wall_belt: bool = True
+    """Shrub belt along building walls (2.5 m from the wall, assumption)."""
+    shrub_parking_hedge: bool = True
+    """Shrub hedge along parking patches (1.0 m from the patch edge, assumption)."""
     parking_layout: Literal["along_roads", "free"] = "along_roads"
     """along_roads: roads are built first, surface parking patches are pressed to the road (no separate access roads); free: patches near the house, access road added if far."""
     road_style: Literal["minimal", "loop"] = "minimal"
