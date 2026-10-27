@@ -80,3 +80,12 @@ def test_turnarounds_keep_wall_gap_and_violations_are_reported():
         viol = res["diagnostics"]["turnaround_violations"]
         far = [t for t in res["turnarounds"] if t.distance(bu) < 5.0 - 0.5]
         assert len(far) == len(viol)         # каждое нарушение отступа попадает в диагностику
+
+
+def test_tall_buildings_keep_8_m_wall_gap_and_low_ones_keep_5_m():
+    floors = [16, 16, 3, 3]                      # 48 м (выше 28 м) и 9 м
+    res = generate_roads(BLOCK, HOUSES, floors)
+    roads = _union(res)
+    for h, f in zip(HOUSES, floors):
+        lo = 8.0 if f * 3.0 > 28.0 else 5.0
+        assert h.distance(roads) >= lo - 0.5

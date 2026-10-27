@@ -146,7 +146,11 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
     ys = np.arange(miny + p.cell / 2, maxy, p.cell)
     gx, gy = np.meshgrid(xs, ys)
     ny, nx = gx.shape
-    allowed_poly = block_r.difference(bu.buffer(clearance))
+    half_w = max(w for _, w in p.fire_width) / 2.0 * 2 ** 0.5   # запас на выступ внешнего угла проезда при повороте на 90°
+    tall = [g for g, h in zip(bld_r, heights) if h > p.high_building_m]
+    low = [g for g, h in zip(bld_r, heights) if h <= p.high_building_m]
+    walls = [g.buffer(p.wall_gap_low[0] + half_w) for g in low] + [g.buffer(p.wall_gap_high[0] + half_w) for g in tall]
+    allowed_poly = block_r.difference(unary_union(walls))   # край проезда не ближе минимума для высоты здания (5 м, выше 28 м: 8 м)
     if pu is not None:
         allowed_poly = allowed_poly.difference(pu.buffer(p.cell / 2.0))
     allowed = contains_xy(allowed_poly, gx.ravel(), gy.ravel()).reshape(ny, nx)

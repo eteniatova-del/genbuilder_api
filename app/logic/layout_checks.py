@@ -62,7 +62,7 @@ def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadPar
         carr_u = unary_union([c["geometry"] for c in carr if c["geometry"] is not None and not c["geometry"].is_empty]) if carr else None
         for i, g in enumerate(footprints):
             hi = rp.wall_gap_high[1] if heights[i] > rp.high_building_m else rp.wall_gap_low[1]
-            lo = rp.wall_gap_low[0]
+            lo = rp.wall_gap_high[0] if heights[i] > rp.high_building_m else rp.wall_gap_low[0]
             d = g.distance(carr_u) if carr_u is not None else 1e9
             if d > hi + tol or d < lo - 0.5:
                 viol.append({"building": i, "distance_to_road_m": round(d, 1), "allowed_m": [lo, hi]})
