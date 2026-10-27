@@ -124,7 +124,7 @@ def merge_generation_result(result: dict | None) -> dict:
     if isinstance(result, dict) and isinstance(result.get("service_diagnostics"), dict):
         response["service_diagnostics"] = result["service_diagnostics"]
     if isinstance(result, dict):
-        for key in ("generated_greenery", "generated_parking", "generated_roads", "landscape_diagnostics"):
+        for key in ("generated_greenery", "generated_parking", "generated_roads", "landscape_diagnostics", "capacity_diagnostics"):
             if isinstance(result.get(key), dict):
                 response[key] = result[key]
     return response

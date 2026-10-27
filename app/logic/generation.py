@@ -186,6 +186,7 @@ class Genbuilder:
     ):
         service_diagnostics = self._base_service_diagnostics(territory_id)
         landscape_payload: Optional[dict] = None
+        capacity_payload: Optional[dict] = None
 
         def build_feature_collection_response(
             buildings_fc: dict,
@@ -200,6 +201,8 @@ class Genbuilder:
             if landscape_payload is not None:
                 # Extra keys appear only when landscape_enabled is set.
                 response.update(landscape_payload)
+            if capacity_payload is not None:
+                response["capacity_diagnostics"] = capacity_payload
             return response
 
         def normalize_selected_features_payload(selected: object) -> dict:
@@ -942,6 +945,25 @@ class Genbuilder:
             )
         buildings_all = await asyncio.to_thread(buildings_all.to_crs, 4326)
         buildings_all["residents_number"] = round(buildings_all["living_area"] / la_per_person)
+
+        requested = sum(float(v or 0.0) for v in (targets_by_zone.get("residents", {}) or {}).values())
+        if requested > 0:
+            placed = float(buildings_all["residents_number"].fillna(0).sum())
+            tol = 0.03                                     # допуск округления и подбора этажности
+            ok = placed >= requested * (1.0 - tol)
+            capacity_payload = {
+                "status": "ok" if ok else "insufficient_area",
+                "residents_requested": round(requested),
+                "residents_placed": round(placed),
+                "residents_shortfall": 0 if ok else round(requested - placed),
+                "warning": None if ok else (
+                    f"На заданной территории размещается около {round(placed)} из {round(requested)} запрошенных жителей: "
+                    "не хватает места для зданий (с учётом отступов и существующих объектов). "
+                    "Уменьшите число жителей, увеличьте этажность или площадь кварталов."
+                ),
+            }
+            if not ok:
+                logger.warning("Genbuilder.run: {}", capacity_payload["warning"])
 
         logger.info(
             "Genbuilder.run: final buildings count={}, "

@@ -457,6 +457,14 @@ class BuildingFeatureCollection(BaseModel):
             "and `roads_enabled` are set. Sketch-level network, see `landscape_diagnostics`."
         ),
     )
+    capacity_diagnostics: Optional[dict] = Field(
+        default=None,
+        description=(
+            "Whether the requested number of residents fits the territory: `status` (`ok` | `insufficient_area`), "
+            "`residents_requested`, `residents_placed`, `residents_shortfall` and a `warning` text. "
+            "Present when residents are given in the generation targets."
+        ),
+    )
     landscape_diagnostics: Optional[dict] = Field(
         default=None,
         description=(
