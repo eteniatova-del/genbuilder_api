@@ -13,8 +13,8 @@ from app.logic.roads import RoadParams, fire_width_for
 
 # основание каждой проверки: norm — текст СП 42.13330 проверен; secondary — вторичный источник; assumption — допущение модели
 BASIS = {
-    "road_access_distance": "secondary", "road_width_fire": "secondary", "dead_end_limit": "norm", "fire_access_sides": "norm",
-    "roads_connected": "assumption", "turnaround_free": "secondary", "roads_no_overlap": "assumption",
+    "road_access_distance": "norm", "road_width_fire": "norm", "dead_end_limit": "norm", "fire_access_sides": "norm",
+    "roads_connected": "assumption", "turnaround_free": "norm", "roads_no_overlap": "assumption",
     "parking_near_road": "assumption", "parking_access": "assumption", "parking_window_setback": "secondary", "parking_balance": "norm", "shrubs_buffers": "norm", "parking_walk_distance": "norm", "parking_edu_setback": "secondary",
     "trees_buffers": "assumption", "green_norm": "secondary", "near_street_axis": "assumption",
 }
@@ -67,7 +67,7 @@ def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadPar
             if d > hi + tol or d < lo - 0.5:
                 viol.append({"building": i, "distance_to_road_m": round(d, 1), "allowed_m": [lo, hi]})
         out.append(_res("road_access_distance", "Проезд у каждого здания на расстоянии 5-8 м (выше 28 м: 8-10 м) от стены", n, viol,
-                        "СП 4.13130 (вторичный источник); допуск на растр 2,5 м"))
+                        "СП 4.13130.2013 п. 8.1.6 (текст проверен); допуск на растр 2,5 м"))
 
         # 2. ширина проезда не меньше пожарной для ближайшего здания
         viol = []
@@ -77,7 +77,7 @@ def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadPar
             if not near or max(near) + 1e-6 < fw:
                 viol.append({"building": i, "need_m": fw, "have_m": max(near) if near else None})
         out.append(_res("road_width_fire", "Ширина проезда у здания не меньше пожарной по высоте", n, viol,
-                        "3,5 / 4,2 / 6,0 м (вторичный источник)"))
+                        "СП 4.13130.2013 п. 8.1.4 (текст проверен): 3,5 / 4,2 / 6,0 м"))
 
         # 3. тупики не длиннее 150 м
         dv = roads["diagnostics"].get("dead_end_violations", [])
