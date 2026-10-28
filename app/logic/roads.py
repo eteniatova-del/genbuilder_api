@@ -65,7 +65,9 @@ class RoadParams:
     park_link_max_m: float = 12.0             # ASSUMPTION: максимальная длина достраиваемого съезда к пятну, м
     fire_all_sides_area_m2: float = 10000.0  # п. 8.1.1: площадь застройки более 10 000 м2 — со всех сторон
     fire_all_sides_width_m: float = 100.0     # п. 8.1.1: ширина более 100 м — со всех сторон (ширина = меньшая сторона, допущение)
-    corner_radius_m: float = 6.0              # ASSUMPTION: радиус закругления оси проезда на поворотах, м (нормативное значение для внутриквартальных проездов не получено; 0 — без закруглений)
+    corner_radius_main_m: float = 50.0        # НОРМА: наименьший радиус кривых в плане основного проезда, СП 42.13330.2026 табл. 8.9 (0 — без закруглений)
+    corner_radius_secondary_m: float = 25.0   # НОРМА: то же для второстепенного проезда, табл. 8.9
+    access_corner_radius_m: float = 6.0       # подъезд вдоль стен здания (п. 8.55 СП 42: допускается без закругления; СП 396 табл. 5.10 тип 3: R=6 м), радиус ограничен отступом от стены
     kerb_radius_m: float = 6.0                # ASSUMPTION: радиус закругления кромки проезжей части на примыканиях и углов разворотной площадки, м (СП 396.1325800 не получен; 0 — без закруглений)
     smooth_tol_m: float = 2.0                 # ASSUMPTION: допуск спрямления ступенчатой растровой линии, м (0 — не спрямлять)
     road_style: str = "minimal"               # minimal | loop: loop закрывает каждый тупик вторым выходом на улицу
@@ -73,7 +75,7 @@ class RoadParams:
     edu_two_accesses: bool = True             # СП 42 п. 6.4.49 (условное требование; применяется всегда)
 
 
-def smooth_polyline(pts, radius: float, tol: float):
+def smooth_polyline(pts, radius: float, tol: float, stats: list | None = None):
     """Спрямляет растровую «лесенку» (Дуглас-Пойкер, допуск tol) и скругляет повороты дугой радиуса radius.
     Радиус в углу уменьшается, если соседние отрезки короче 2·радиус (дуги не заходят друг на друга)."""
     ln = LineString(pts)
@@ -98,6 +100,8 @@ def smooth_polyline(pts, radius: float, tol: float):
         half1 = l1 / 2.0 if k > 1 else l1                 # на соседний угол отдаём не более половины отрезка
         half2 = l2 / 2.0 if k < len(c) - 2 else l2
         r = min(radius, min(half1, half2) / np.tan(phi / 2.0))
+        if stats is not None:
+            stats.append((float(radius), float(r)))
         t = r * np.tan(phi / 2.0)
         p1, p2 = b - u1 * t, b + u2 * t
         sgn = 1.0 if (u1[0] * u2[1] - u1[1] * u2[0]) > 0 else -1.0
@@ -687,11 +691,29 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
             draw_xy[c_] = np.mean(pl_, axis=0)
     # полилинии одинаковой ширины -> полигоны (прямые углы: квадратные торцы, митра)
     lines_by_w, seen, total_len = {}, set(), 0.0
-    fire_smooth = [(i_, smooth_polyline(pts_, p.corner_radius_m, p.smooth_tol_m)) for i_, pts_ in fire_lines] if skip_draw else []
+    curve_stats: list = []
+    walls_u = unary_union(walls) if walls else None
+
+    def _radius_for(w_):
+        return p.corner_radius_main_m if w_ >= p.main_width else p.corner_radius_secondary_m
+
+    fire_smooth = [(i_, smooth_polyline(pts_, p.access_corner_radius_m, p.smooth_tol_m)) for i_, pts_ in fire_lines] if skip_draw else []
     ring_all = unary_union([LineString(c_) for _, c_ in fire_smooth]) if fire_smooth else None
 
     def _emit(run_, w_):
-        cc = smooth_polyline(run_, p.corner_radius_m, p.smooth_tol_m)
+        # радиус по СП 42 табл. 8.9; если дуга заходит в нормативный отступ от стен (СП 4.13130 п. 8.1.6), радиус уменьшается
+        base_ = LineString(run_)
+        viol0_ = base_.intersection(walls_u).length if walls_u is not None else 0.0
+        cc, st_ = None, []
+        r_req = _radius_for(w_)
+        for r_try in dict.fromkeys([r_req, r_req * 0.7, r_req * 0.5, 15.0, 10.0, p.access_corner_radius_m, 0.0]):
+            if r_try > r_req:
+                continue
+            st_ = []
+            cc = smooth_polyline(run_, r_try, p.smooth_tol_m, st_)
+            if walls_u is None or LineString(cc).intersection(walls_u).length <= viol0_ + 0.5:
+                break
+        curve_stats.extend((r_req, ra) for _, ra in st_)
         parts_ = [cc]
         if ring_all is not None and not ring_all.is_empty and p.fire_sides_enabled:
             parts_ = [join_perpendicular(x, ring_all) for x in drop_parallel(cc, ring_all)]
@@ -730,6 +752,11 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
         road_polys.append(poly)
         carriageways.append({"width": w, "class": "main" if w >= p.main_width else "secondary", "geometry": Rinv(poly)})
     diag["road_length_m"] = round(total_len, 1)
+    if curve_stats:
+        short = [(rq, ra) for rq, ra in curve_stats if ra < rq - 0.5]
+        diag["curves"] = len(curve_stats)
+        diag["curves_below_norm"] = len(short)
+        diag["curve_radius_min_m"] = round(min(ra for _, ra in curve_stats), 1)
 
     # разворотные площадки в тупиках: накрывают конец тупика, не ближе 5 м к стенам, без стоянок
     final_adj = adjacency(all_paths)

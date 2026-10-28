@@ -139,7 +139,7 @@ def test_smooth_polyline_straightens_staircase_and_rounds_corner():
 
 
 def test_corner_radius_zero_gives_square_corners_and_keeps_wall_gap():
-    p = RoadParams(corner_radius_m=0.0, smooth_tol_m=0.0)
+    p = RoadParams(corner_radius_main_m=0.0, corner_radius_secondary_m=0.0, smooth_tol_m=0.0)
     res = generate_roads(BLOCK, HOUSES, [8] * 4, params=p) if False else generate_roads(BLOCK, HOUSES, [8] * 4, None, p)
     assert res["diagnostics"]["unreachable"] == []
 
@@ -223,3 +223,27 @@ def test_parking_link_keeps_the_wall_gap_of_a_tall_building():
     roads = unary_union([c["geometry"] for c in res["carriageways"]])
     assert tall.distance(roads) >= 8.0 - 0.5
     assert res["diagnostics"]["parking_unlinked"] == [] or patch.distance(roads) > 0.3
+
+
+def test_curve_radius_follows_sp42_table_8_9_when_space_allows():
+    from app.logic.roads import smooth_polyline
+    st = []
+    smooth_polyline([(0, 0), (200, 0), (200, 200)], 50.0, 0.0, st)
+    assert st == [(50.0, 50.0)]                      # основной проезд: R=50 м (табл. 8.9)
+    st = []
+    smooth_polyline([(0, 0), (40, 0), (40, 40)], 50.0, 0.0, st)
+    assert st[0][1] < 50.0                           # короткие отрезки: радиус уменьшается и фиксируется
+
+
+def test_road_curves_are_reported_and_keep_wall_gap():
+    res = generate_roads(BLOCK, HOUSES, [8] * 4)
+    d = res["diagnostics"]
+    assert d.get("curves_below_norm", 0) <= d.get("curves", 0)
+    roads = _union(res)
+    for h in HOUSES:
+        assert h.distance(roads) >= 5.0 - 1e-6       # радиус по СП 42 не нарушает отступ от стены (СП 4.13130 п. 8.1.6)
+
+
+def test_default_curve_radii_are_the_sp42_values():
+    p = RoadParams()
+    assert p.corner_radius_main_m == 50.0 and p.corner_radius_secondary_m == 25.0
