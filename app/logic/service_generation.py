@@ -8,6 +8,7 @@ import asyncio
 
 import pandas as pd
 import geopandas as gpd
+from loguru import logger
 
 from shapely.geometry import Polygon, box, Point
 from shapely.geometry.base import BaseGeometry
@@ -362,6 +363,139 @@ class ServiceGenerator:
 
         return list(df_sorted.itertuples(index=False))
 
+
+    def _add_coverage_services(
+        self,
+        homes_gdf: gpd.GeoDataFrame,
+        block_state: Dict[Any, Dict[str, Any]],
+        all_limits: Dict[Hashable, Dict[str, float]],
+        projects_local: gpd.GeoDataFrame,
+        normalized_buildings: Dict[Any, BaseGeometry],
+        rows: List[Dict[str, Any]],
+        unserved: List[Dict[str, Any]],
+        rng: random.Random,
+        max_added_per_service: int = 12,
+    ) -> int:
+        """Добавляет сервисы там, где жилые дома дальше нормативной доступности от всех сервисов своего вида.
+
+        Радиусы: service_access.SERVICE_ACCESS_M (СП 42, прил. Л, табл. Л.1; по прямой, от стены до стены).
+        Вместимость нового здания не меньше потребности жителей домов, которые оно покрывает
+        (норматив на 1000 жителей из all_limits); решение автора: превышение общей нормы допускается.
+        Если здание не помещается, дома остаются без покрытия и попадают в `unserved`.
+        """
+        from app.logic.service_access import SERVICE_ACCESS_M
+
+        if homes_gdf is None or len(homes_gdf) == 0 or "living_area" not in homes_gdf.columns:
+            return 0
+        lap = float(self.generation_parameters.la_per_person)
+        homes = []
+        for r in homes_gdf.itertuples():
+            la = float(getattr(r, "living_area", 0.0) or 0.0)
+            bid = getattr(r, "src_index", None)
+            if la <= 0.0 or bid not in block_state:
+                continue
+            homes.append({"geom": r.geometry, "people": la / lap, "block": bid, "zone": block_state[bid]["zone"]})
+        added = 0
+        for zone in {h["zone"] for h in homes}:
+            zh = [h for h in homes if h["zone"] == zone]
+            people_zone = sum(h["people"] for h in zh)
+            if people_zone <= 0:
+                continue
+            for service, limit in (all_limits.get(zone) or {}).items():
+                radius = SERVICE_ACCESS_M.get(str(service))
+                projs = projects_local[projects_local["service"] == service]
+                if radius is None or projs.empty or float(limit) <= 0:
+                    continue
+                per_person = float(limit) / people_zone
+                caps = sorted(projs["capacity"].astype(float).unique())
+                min_plot = float((projs["plot_length_min"] * projs["plot_width_min"]).min())
+                reach = radius - 1.0
+
+                def svc_union():
+                    g = [r["geometry"] for r in rows if r["service"] == service]
+                    return unary_union(g) if g else None
+
+                def uncovered_homes(skip):
+                    su = svc_union()
+                    return [i for i, h in enumerate(zh) if i not in skip and (su is None or h["geom"].distance(su) > radius)]
+
+                def free_part(allowed):
+                    return {b: st["free"].intersection(allowed) for b, st in block_state.items()
+                            if st.get("zone") == zone and "free" in st and not st["free"].is_empty}
+
+                skip: set = set()
+                for _ in range(max_added_per_service):
+                    unc = uncovered_homes(skip)
+                    if not unc:
+                        break
+                    su = svc_union()
+                    seed = max(unc, key=lambda i: zh[i]["geom"].distance(su) if su is not None else zh[i]["people"])
+                    order = sorted((i for i in unc if i != seed), key=lambda i: zh[i]["geom"].distance(zh[seed]["geom"]))
+                    cluster, allowed = [seed], zh[seed]["geom"].buffer(reach)
+                    for i in order:
+                        cand = allowed.intersection(zh[i]["geom"].buffer(reach))
+                        demand = sum(zh[j]["people"] for j in cluster + [i]) * per_person
+                        if demand > caps[-1] or cand.is_empty:
+                            continue
+                        if any(fp.area >= min_plot for fp in free_part(cand).values()):
+                            cluster.append(i)
+                            allowed = cand
+                    placed = False
+                    for attempt in (cluster, [seed]):
+                        allowed = zh[attempt[0]]["geom"].buffer(reach)
+                        for i in attempt[1:]:
+                            allowed = allowed.intersection(zh[i]["geom"].buffer(reach))
+                        demand = sum(zh[j]["people"] for j in attempt) * per_person
+                        need = [c for c in caps if c >= demand] or [caps[-1]]
+                        for proj in projs.sort_values("capacity").itertuples(index=False):
+                            if float(proj.capacity) < need[0]:
+                                continue
+                            tmpl = normalized_buildings.get(proj.type_id)
+                            if tmpl is None:
+                                continue
+                            for bid, part in free_part(allowed).items():
+                                if part.is_empty:
+                                    continue
+                                ang = block_state[bid]["angle"]
+                                plot = self._sample_rect_in_polygon(
+                                    part, (float(proj.plot_length_min), float(proj.plot_length_max)),
+                                    (float(proj.plot_width_min), float(proj.plot_width_max)),
+                                    max_attempts=self.generation_parameters.max_service_attempts,
+                                    preferred_angle=ang, rng=rng)
+                                if plot is None:
+                                    continue
+                                geom = None
+                                for a in (ang, ang + 90.0):
+                                    geom = self._place_building_in_plot(rotate(tmpl, a, origin=(0, 0), use_radians=False), plot, rng=rng)
+                                    if geom is not None:
+                                        break
+                                if geom is None:
+                                    continue
+                                try:
+                                    fl = float(proj.floors_count)
+                                except (TypeError, ValueError):
+                                    fl = 0.0
+                                rows.append({
+                                    "src_index": bid, "zone": zone, "service": service, "project_id": proj.type_id,
+                                    "capacity": float(proj.capacity), "floors_count": proj.floors_count,
+                                    "living_area": 0.0, "functional_area": geom.area * fl if fl > 0 else 0.0,
+                                    "osm_url": getattr(proj, "osm_url", None), "address": getattr(proj, "address", None),
+                                    "geometry": geom,
+                                })
+                                block_state[bid]["free"] = block_state[bid]["free"].difference(plot)
+                                added += 1
+                                placed = True
+                                break
+                            if placed:
+                                break
+                        if placed:
+                            break
+                    if not placed or seed in uncovered_homes(skip):
+                        skip.add(seed)
+                        unserved.append({"zone": zone, "service": str(service), "home_geom": zh[seed]["geom"].wkt,
+                                         "reason": "no_space_within_access_radius"})
+        return added
+
     def place_service_buildings(
         self,
         blocks: gpd.GeoDataFrame,
@@ -384,6 +518,7 @@ class ServiceGenerator:
 
         zone_placed_capacity: Dict[Hashable, Dict[str, float]] = {}
         site_limit_targets: set[tuple[Hashable, str]] = set()
+        block_state: Dict[Any, Dict[str, Any]] = {}
 
         for block_row in blocks.itertuples():
             block_id = getattr(block_row, "src_index")
@@ -416,6 +551,8 @@ class ServiceGenerator:
             # they are subtracted here, service placement sees no usable area.
             # Only generated building footprints are physical obstacles.
             free_area = self._get_block_free_area(block_geom, occupied_block)
+            block_state[block_id] = {"angle": block_angle, "zone": zone_id}
+            block_state[block_id]["free"] = free_area
             if free_area.is_empty:
                 continue
 
@@ -553,6 +690,7 @@ class ServiceGenerator:
                         placed_in_iteration = True
 
                         free_area = free_area.difference(plot_geom)
+                        block_state[block_id]["free"] = free_area
                         placed_plot_centers.append(plot_geom.centroid)
 
                         break
@@ -568,6 +706,16 @@ class ServiceGenerator:
                     >= self.generation_parameters.max_sites_per_service_per_block
                 ):
                     site_limit_targets.add((zone_id, str(service_name)))
+
+        access_unserved: List[Dict[str, Any]] = []
+        coverage_added = 0
+        try:
+            coverage_added = self._add_coverage_services(
+                occupied_buildings_gdf, block_state, all_limits, projects_local,
+                normalized_buildings, service_buildings_rows, access_unserved, rng,
+            )
+        except Exception as exc:  # расширение покрытия не должно ронять генерацию
+            logger.warning("service coverage step failed: {}", exc)
 
         available_service_names = set(projects_local["service"].dropna().astype(str))
         failure_reasons: Dict[tuple[Hashable, str], str] = {}
@@ -608,6 +756,8 @@ class ServiceGenerator:
                 crs=blocks_crs,
             )
         result.attrs["failure_reasons"] = failure_reasons
+        result.attrs["coverage_services_added"] = coverage_added
+        result.attrs["access_unserved"] = access_unserved
         return result
 
     async def generate_services(
@@ -667,5 +817,11 @@ class ServiceGenerator:
                 services_buildings_gdf,
                 services_buildings_gdf.attrs.get("failure_reasons"),
             )
+        )
+        services_buildings_gdf.attrs["service_diagnostics"]["coverage_services_added"] = int(
+            services_buildings_gdf.attrs.get("coverage_services_added", 0)
+        )
+        services_buildings_gdf.attrs["service_diagnostics"]["access_unserved"] = list(
+            services_buildings_gdf.attrs.get("access_unserved", [])
         )
         return services_buildings_gdf
