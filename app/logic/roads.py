@@ -53,7 +53,14 @@ class RoadParams:
     reuse_cost: float = 0.15                  # ASSUMPTION: относительная стоимость прохода по уже построенному проезду
     turn_penalty: float = 20.0                # ASSUMPTION: штраф за поворот, м эквивалентной длины (К5)
     junction_penalty: float = 10.0            # ASSUMPTION: штраф за новую развилку, м (К4)
-    wide_building_m: float = 18.0             # МУ «Квартал» ВГАСУ (вторичный): шире 18 м — подъезд с двух сторон
+    wide_building_m: float | None = None      # правило «шире 18 м» относится к зданиям Ф5 (СП 4.13130 п. 8.2.1, 123-ФЗ ст. 98); для жилья отключено
+    fire_sides_enabled: bool = True           # СП 4.13130.2013 п. 8.1.1 (текст проверен): подъезд вдоль стен по всей длине стороны
+    fire_class_by_service: tuple = (("детский сад", "F1.1"), ("дошкольн", "F1.1"), ("школа", "F4.1"),
+                                    ("общеобразовательн", "F4.1"), ("поликлиник", "F3.4"))   # 123-ФЗ ст. 32 (текст проверен)
+    fire_two_sides_f13_m: float = 28.0        # п. 8.1.1 а): многоквартирные жилые Ф1.3 высотой 28 м и более: две продольные стороны
+    fire_two_sides_public_m: float = 18.0     # п. 8.1.1 а): Ф1.2, Ф2.1, Ф2.2, Ф3, Ф4.2-4.4 высотой 18 м и более: две продольные стороны
+    fire_all_sides_area_m2: float = 10000.0   # п. 8.1.1: площадь застройки более 10 000 м2 — со всех сторон
+    fire_all_sides_width_m: float = 100.0     # п. 8.1.1: ширина более 100 м — со всех сторон (ширина = меньшая сторона, допущение)
     road_style: str = "minimal"               # minimal | loop: loop закрывает каждый тупик вторым выходом на улицу
     patch_reach: float = 12.0                 # ASSUMPTION: пятно парковки ближе этого расстояния к проезду отдельного заезда не получает
     edu_two_accesses: bool = True             # СП 42 п. 6.4.49 (условное требование; применяется всегда)
@@ -69,6 +76,33 @@ def fire_width_for(height_m: float, p: RoadParams) -> float:
 def _gap_mid(height_m: float, p: RoadParams) -> float:
     lo, hi = p.wall_gap_high if height_m > p.high_building_m else p.wall_gap_low
     return (lo + hi) / 2.0
+
+
+def _target_slack(height_m: float, fw_m: float, p: RoadParams) -> float:
+    """Продление полосы стороны за её концы, чтобы проезды соседних сторон здания смыкались в кольцо."""
+    return _gap_mid(height_m, p) + fw_m / 2.0 + p.cell
+
+
+def fire_class(service, p: RoadParams) -> str:
+    """Класс функциональной пожарной опасности по названию сервиса (123-ФЗ ст. 32); без сервиса — Ф1.3 (многоквартирный дом)."""
+    nm = (service or "").lower()
+    if not nm:
+        return "F1.3"
+    for key, cls in p.fire_class_by_service:
+        if key in nm:
+            return cls
+    return "F3"            # ASSUMPTION: прочее общественное здание — Ф3 (порог двух сторон 18 м)
+
+
+def fire_sides_required(height_m: float, poly, service, p: RoadParams) -> int:
+    """Число сторон, с которых нужен подъезд пожарных автомобилей по всей длине (СП 4.13130.2013 п. 8.1.1): 1, 2 или 4."""
+    cls = fire_class(service, p)
+    if cls in ("F1.1", "F4.1"):
+        return 4
+    if poly.area > p.fire_all_sides_area_m2 or _short_side(poly) > p.fire_all_sides_width_m:
+        return 4
+    thr = p.fire_two_sides_f13_m if cls == "F1.3" else p.fire_two_sides_public_m
+    return 2 if height_m >= thr else 1
 
 
 def _short_side(poly) -> float:
@@ -187,7 +221,7 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
         a1 = int(cand[np.argmin(db_all[cand])])
         acc = [a1]
         nm = (services[i] or "").lower() if services else ""
-        wide = _short_side(bld_r[i]) > p.wide_building_m
+        wide = p.wide_building_m is not None and _short_side(bld_r[i]) > p.wide_building_m
         if ((p.edu_two_accesses and any(s in nm for s in EDU_SERVICES)) or wide) and len(cand) > 1:
             far = np.hypot(cell_xy[cand, 0] - cell_xy[a1, 0], cell_xy[cand, 1] - cell_xy[a1, 1])
             acc.append(int(cand[np.argmax(far)]))
@@ -229,11 +263,155 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
                 cells.append(c)
         return cells
 
+    # подъезд пожарных автомобилей вдоль стен по всей длине сторон (СП 4.13130.2013 п. 8.1.1)
+    fire_paths = [[] for _ in range(n)]
+    diag["fire_sides"] = []
+    if p.fire_sides_enabled:
+        from scipy.sparse.csgraph import connected_components
+
+        from scipy.spatial import cKDTree
+        tree = cKDTree(cell_xy)
+
+        def ring_samples(i):
+            """Точки контура здания, смещённого на расстояние подъезда (внешний контур), и ближайшие разрешённые ячейки."""
+            target = _gap_mid(heights[i], p) + fw[i] / 2.0
+            ring = bld_r[i].buffer(target, join_style=2).exterior
+            n_s = max(8, int(ring.length / (p.cell * 0.5)))
+            pts_ = np.array([ring.interpolate(k * ring.length / n_s).coords[0] for k in range(n_s)])
+            dd, ii = tree.query(pts_)
+            cells_ = np.where(dd <= p.cell * 0.75, ii, -1)
+            return pts_, cells_, ring.length / n_s
+
+        def bridge(a_c, b_c, mask):
+            """Путь между ячейками внутри маски (полосы вдоль здания); None, если не связаны."""
+            keep = mask[t_cs] & mask[t_cd]
+            if not keep.any():
+                return None
+            w = step_len[keep] + p.turn_penalty * t_turn[keep]
+            g = csr_matrix((w + 1e-6, (t_src[keep], t_dst[keep])), shape=(ns, ns))
+            d_, pred_, _s = dijkstra(g, directed=True, indices=[a_c * 4 + k for k in range(4)], min_only=True,
+                                     return_predecessors=True)
+            tg_states = np.array([b_c * 4 + k for k in range(4)])
+            dt = d_[tg_states]
+            if not np.isfinite(dt).any():
+                return None
+            ps = [int(tg_states[np.argmin(dt)])]
+            while pred_[ps[-1]] >= 0:
+                ps.append(int(pred_[ps[-1]]))
+            out_ = []
+            for st_ in ps[::-1]:
+                c_ = st_ // 4
+                if not out_ or out_[-1] != c_:
+                    out_.append(c_)
+            return out_
+
+        def side_path(i, edge, slack, samples):
+            """Цепочка ячеек вдоль одной стороны здания i по смещённому контуру; (ячейки, охват 0..1)."""
+            p0, u, length, nrm = edge
+            pts_, cells_, step_ = samples
+            rel = pts_ - p0
+            t = rel @ u
+            sd = rel @ nrm
+            sel_ = np.where((sd > 0) & (t >= -slack) & (t <= length + slack))[0]
+            if len(sel_) < 2:
+                return None
+            target = _gap_mid(heights[i], p) + fw[i] / 2.0
+            band = np.abs(dist_to_b[i] - target) <= p.cell * 2.0
+            seq, found = [], 0
+            for k in sel_:
+                c_ = int(cells_[k])
+                if c_ < 0:
+                    continue
+                found += 1
+                if not seq or seq[-1] != c_:
+                    seq.append(c_)
+            if len(seq) < 2:
+                return None
+            chain = [seq[0]]
+            for c_ in seq[1:]:
+                a_c = chain[-1]
+                if np.hypot(*(cell_xy[a_c] - cell_xy[c_])) <= p.cell * 1.01:
+                    chain.append(c_)
+                    continue
+                br = bridge(a_c, c_, band)
+                if br is None:
+                    return None if len(chain) < 2 else (chain, round(found / len(sel_), 2))   # разрыв: оставляем пройденное
+                chain.extend(br[1:])
+            return chain, round(found / len(sel_), 2)
+
+        for i in range(n):
+            if not accesses[i]:
+                continue
+            need = fire_sides_required(heights[i], bld_r[i], (services[i] if services else None), p)
+            mrr = bld_r[i].minimum_rotated_rectangle
+            xs_, ys_ = mrr.exterior.coords.xy
+            pts = list(zip(xs_[:4], ys_[:4]))
+            cen = np.array(bld_r[i].centroid.coords[0])
+            edges = []
+            for k in range(4):
+                a_, b_ = np.array(pts[k]), np.array(pts[(k + 1) % 4])
+                vec = b_ - a_
+                ln = float(np.hypot(*vec))
+                if ln < 1e-6:
+                    continue
+                u_ = vec / ln
+                nr = np.array([u_[1], -u_[0]])
+                if (((a_ + b_) / 2.0) - cen) @ nr < 0:
+                    nr = -nr
+                edges.append((a_, u_, ln, nr))
+            edges.sort(key=lambda e: -e[2])
+            slack_long = p.cell
+            if need == 4:
+                chosen = [(e, _target_slack(heights[i], fw[i], p)) for e in edges]
+            elif need == 2:
+                chosen = [(e, slack_long) for e in edges[:2]]
+            else:
+                chosen = None
+            built, cover = [], []
+            smp = ring_samples(i)
+            if chosen is None:                       # одна продольная сторона: берём ту, где подъезд охватывает больше длины
+                best_one = None
+                for e in edges[:2]:
+                    r_ = side_path(i, e, slack_long, smp)
+                    if r_ is not None and (best_one is None or r_[1] > best_one[1]):
+                        best_one = r_
+                if best_one is not None:
+                    built.append(best_one[0])
+                    cover.append(best_one[1])
+            else:
+                for e, sl in chosen:
+                    r_ = side_path(i, e, sl, smp)
+                    if r_ is not None:
+                        built.append(r_[0])
+                        cover.append(r_[1])
+            fire_paths[i] = built
+            diag["fire_sides"].append({"building": i, "required": need, "built": len(built), "coverage": cover})
+
     bkey = lambda i: min([db_all[a] for a in accesses[i]] or [1e9])
     order = sorted(range(n), key=bkey)
     patch_order = sorted(range(n, len(accesses)), key=bkey)
     paths, served = {}, {}
     for i in order + patch_order:
+        if i < n and fire_paths[i]:
+            for k, sp in enumerate(fire_paths[i]):
+                sp_arr = np.array(sp, dtype=np.int64)
+                if not on_road[sp_arr].any():                      # сторона ещё не связана с сетью: проводим соединение
+                    own = np.zeros(nn, dtype=bool)
+                    own[sp_arr] = True
+                    tg = np.where((on_road | street_mask) & ~own)[0]
+                    conn = solve(list(sp), tg) if len(tg) else None
+                    if conn is None:
+                        diag["unreachable"].append(i)
+                        continue
+                    paths[(i, "c%d" % k)] = conn
+                    for v in conn:
+                        on_road[v] = True
+                        served.setdefault(v, set()).add(i)
+                paths[(i, "s%d" % k)] = list(sp)
+                for v in sp:
+                    on_road[v] = True
+                    served.setdefault(v, set()).add(i)
+            continue
         if i >= n and accesses[i] and on_road.any():
             # пятно парковки, уже находящееся рядом с проездом, отдельного заезда не получает
             dpr = float(np.min(np.hypot(cell_xy[on_road, 0] - cell_xy[accesses[i][0], 0],
