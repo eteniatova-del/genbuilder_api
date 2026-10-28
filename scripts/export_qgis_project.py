@@ -77,6 +77,10 @@ for name, color in {layers}:
         lyr.renderer().setSymbol(QgsFillSymbol.createSimple({{"color": color, "outline_color": "#333333", "outline_width": "0.1"}}))
     project.addMapLayer(lyr)
     layers.append(lyr)
+# QGIS сбрасывает СК проекта на СК первого слоя (GeoJSON, EPSG:4326, градусы), поэтому метрическую СК задаём после добавления слоёв
+crs = QgsCoordinateReferenceSystem("EPSG:{crs}")
+project.setCrs(crs)
+iface.mapCanvas().setDestinationCrs(crs)
 # охват по зданиям; масштаб экранный, зависит от DPI монитора
 ext = None
 blayer = None
