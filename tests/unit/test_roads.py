@@ -247,3 +247,12 @@ def test_road_curves_are_reported_and_keep_wall_gap():
 def test_default_curve_radii_are_the_sp42_values():
     p = RoadParams()
     assert p.corner_radius_main_m == 50.0 and p.corner_radius_secondary_m == 25.0
+
+
+def test_parking_link_does_not_overlap_its_own_patch():
+    # регрессия: торец съезда шириной 3,5 м при подходе под углом заходил в пятно (до 1 м²)
+    for b in ((13, 37, 27, 67), (192, 260, 206, 290), (17, 164, 31, 194), (202, 112, 216, 142)):
+        patch = box(*b)
+        res = generate_roads(BLOCK, HOUSES, [8] * 4, None, patches=[patch])
+        roads = unary_union([c["geometry"] for c in res["carriageways"]] + res["turnarounds"])
+        assert roads.intersection(patch).area < 1e-6

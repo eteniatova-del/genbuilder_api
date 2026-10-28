@@ -881,7 +881,7 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
             lk = None
             for dd_, a_, b_ in cand_[:40]:
                 ux, uy = (a_.x - b_.x) / dd_, (a_.y - b_.y) / dd_
-                lk_ = LineString([(b_.x - ux * 0.5, b_.y - uy * 0.5), (a_.x, a_.y)]).buffer(p.secondary_width / 2.0, cap_style=2)
+                lk_ = LineString([(b_.x - ux * 0.5, b_.y - uy * 0.5), (a_.x, a_.y)]).buffer(p.secondary_width / 2.0, cap_style=2).difference(pg_)   # торец съезда не заходит в своё пятно
                 lk_n = lk_.difference(net_r)
                 if lk_.intersection(bu).area > 1e-6:
                     continue
