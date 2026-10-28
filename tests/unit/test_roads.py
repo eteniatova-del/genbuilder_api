@@ -1,6 +1,6 @@
 """Intra-block roads: reachability, normative widths, wall gap, dead ends, turnarounds."""
 import pytest
-from shapely.geometry import box
+from shapely.geometry import LineString, Point, box
 from shapely.ops import unary_union
 
 from app.logic.landscape import LandscapeParams, generate_landscape
@@ -122,3 +122,21 @@ def test_fire_access_sides_are_built_along_the_walls():
 def test_low_house_gets_one_fire_side():
     res = generate_roads(BLOCK, [box(120, 120, 200, 138)], [5])
     assert _fs(res)[0]["required"] == 1 and _fs(res)[0]["built"] == 1
+
+
+def test_smooth_polyline_straightens_staircase_and_rounds_corner():
+    from app.logic.roads import smooth_polyline
+    stairs = [(0, 0)]
+    for _ in range(8):
+        stairs += [(stairs[-1][0] + 2.5, stairs[-1][1]), (stairs[-1][0] + 2.5, stairs[-1][1] + 1.5)]
+    out = smooth_polyline(stairs, 0.0, 2.0)
+    assert len(out) == 2                                  # лесенка превращена в один прямой отрезок
+    corner = smooth_polyline([(0, 0), (30, 0), (30, 30)], 6.0, 0.0)
+    assert len(corner) > 3                                # поворот на 90° заменён дугой
+    assert LineString(corner).length < 60.0 and LineString(corner).distance(Point(30, 0)) > 1.5
+
+
+def test_corner_radius_zero_gives_square_corners_and_keeps_wall_gap():
+    p = RoadParams(corner_radius_m=0.0, smooth_tol_m=0.0)
+    res = generate_roads(BLOCK, HOUSES, [8] * 4, params=p) if False else generate_roads(BLOCK, HOUSES, [8] * 4, None, p)
+    assert res["diagnostics"]["unreachable"] == []

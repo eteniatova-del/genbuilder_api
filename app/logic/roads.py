@@ -61,9 +61,51 @@ class RoadParams:
     fire_two_sides_public_m: float = 18.0     # п. 8.1.1 а): Ф1.2, Ф2.1, Ф2.2, Ф3, Ф4.2-4.4 высотой 18 м и более: две продольные стороны
     fire_all_sides_area_m2: float = 10000.0   # п. 8.1.1: площадь застройки более 10 000 м2 — со всех сторон
     fire_all_sides_width_m: float = 100.0     # п. 8.1.1: ширина более 100 м — со всех сторон (ширина = меньшая сторона, допущение)
+    corner_radius_m: float = 6.0              # ASSUMPTION: радиус закругления оси проезда на поворотах, м (нормативное значение для внутриквартальных проездов не получено; 0 — без закруглений)
+    smooth_tol_m: float = 2.0                 # ASSUMPTION: допуск спрямления ступенчатой растровой линии, м (0 — не спрямлять)
     road_style: str = "minimal"               # minimal | loop: loop закрывает каждый тупик вторым выходом на улицу
     patch_reach: float = 12.0                 # ASSUMPTION: пятно парковки ближе этого расстояния к проезду отдельного заезда не получает
     edu_two_accesses: bool = True             # СП 42 п. 6.4.49 (условное требование; применяется всегда)
+
+
+def smooth_polyline(pts, radius: float, tol: float):
+    """Спрямляет растровую «лесенку» (Дуглас-Пойкер, допуск tol) и скругляет повороты дугой радиуса radius.
+    Радиус в углу уменьшается, если соседние отрезки короче 2·радиус (дуги не заходят друг на друга)."""
+    ln = LineString(pts)
+    if tol and tol > 0 and len(pts) > 2:
+        ln = ln.simplify(tol, preserve_topology=False)
+    c = [tuple(x) for x in ln.coords]
+    if not radius or radius <= 0 or len(c) < 3:
+        return c
+    out = [c[0]]
+    for k in range(1, len(c) - 1):
+        a, b, d = np.array(c[k - 1]), np.array(c[k]), np.array(c[k + 1])
+        v1, v2 = b - a, d - b
+        l1, l2 = float(np.hypot(*v1)), float(np.hypot(*v2))
+        if l1 < 1e-9 or l2 < 1e-9:
+            continue
+        u1, u2 = v1 / l1, v2 / l2
+        cosp = float(np.clip(u1 @ u2, -1.0, 1.0))
+        phi = float(np.arccos(cosp))                      # угол поворота
+        if phi < np.radians(5.0) or phi > np.radians(175.0):
+            out.append(tuple(b))
+            continue
+        half1 = l1 / 2.0 if k > 1 else l1                 # на соседний угол отдаём не более половины отрезка
+        half2 = l2 / 2.0 if k < len(c) - 2 else l2
+        r = min(radius, min(half1, half2) / np.tan(phi / 2.0))
+        t = r * np.tan(phi / 2.0)
+        p1, p2 = b - u1 * t, b + u2 * t
+        sgn = 1.0 if (u1[0] * u2[1] - u1[1] * u2[0]) > 0 else -1.0
+        cen = p1 + sgn * np.array([-u1[1], u1[0]]) * r
+        a0 = np.arctan2(*(p1 - cen)[::-1])
+        a1 = np.arctan2(*(p2 - cen)[::-1])
+        da = (a1 - a0 + np.pi) % (2 * np.pi) - np.pi
+        n = max(3, int(abs(da) / np.radians(10)))
+        for j in range(n + 1):
+            ang = a0 + da * j / n
+            out.append((float(cen[0] + r * np.cos(ang)), float(cen[1] + r * np.sin(ang))))
+    out.append(c[-1])
+    return out
 
 
 def fire_width_for(height_m: float, p: RoadParams) -> float:
@@ -265,6 +307,8 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
 
     # подъезд пожарных автомобилей вдоль стен по всей длине сторон (СП 4.13130.2013 п. 8.1.1)
     fire_paths = [[] for _ in range(n)]
+    nudge_map = {}
+    fire_lines = []                              # (здание, точки идеального смещённого контура) — для рисования подъезда
     diag["fire_sides"] = []
     if p.fire_sides_enabled:
         from scipy.sparse.csgraph import connected_components
@@ -281,7 +325,11 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
         def ring_samples(i):
             """Точки контура здания, смещённого на расстояние подъезда (внешний контур), и ближайшие разрешённые ячейки."""
             target = ring_d(i)
-            ring = bld_r[i].buffer(target, join_style=2).exterior
+            if p.smooth_tol_m and p.smooth_tol_m > 0:     # зубчатый контур здания не переносим на проезд: берём слегка раздутый, спрямлённый контур
+                base = bld_r[i].buffer(p.cell, join_style=2).simplify(p.smooth_tol_m * 0.75)
+                ring = base.buffer(max(target - p.cell, 0.0), join_style=2).exterior
+            else:
+                ring = bld_r[i].buffer(target, join_style=2).exterior
             n_s = max(8, int(ring.length / (p.cell * 0.5)))
             pts_ = np.array([ring.interpolate(k * ring.length / n_s).coords[0] for k in range(n_s)])
             dd, ii = tree.query(pts_)
@@ -323,14 +371,28 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
                 return None
             target = ring_d(i)
             band = np.abs(dist_to_b[i] - target) <= p.cell * 2.0
-            seq, found = [], 0
+            seq, found, nz, runs, cur = [], 0, {}, [], []
+            prev_k = None
             for k in sel_:
+                if prev_k is not None and k != prev_k + 1 and len(cur) >= 2:    # пропуск точек контура: не соединяем напрямую
+                    runs.append(cur)
+                    cur = []
+                elif prev_k is not None and k != prev_k + 1:
+                    cur = []
+                prev_k = k
                 c_ = int(cells_[k])
                 if c_ < 0:
+                    if len(cur) >= 2:
+                        runs.append(cur)
+                    cur = []
                     continue
+                cur.append(tuple(pts_[k]))
                 found += 1
+                nz.setdefault(c_, []).append(pts_[k])
                 if not seq or seq[-1] != c_:
                     seq.append(c_)
+            if len(cur) >= 2:
+                runs.append(cur)
             if len(seq) < 2:
                 return None
             chain = [seq[0]]
@@ -341,9 +403,9 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
                     continue
                 br = bridge(a_c, c_, band)
                 if br is None:
-                    return None if len(chain) < 2 else (chain, round(found / len(sel_), 2))   # разрыв: оставляем пройденное
+                    return None if len(chain) < 2 else (chain, round(found / len(sel_), 2), nz, runs)   # разрыв: оставляем пройденное
                 chain.extend(br[1:])
-            return chain, round(found / len(sel_), 2)
+            return chain, round(found / len(sel_), 2), nz, runs
 
         for i in range(n):
             if not accesses[i]:
@@ -384,12 +446,18 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
                 if best_one is not None:
                     built.append(best_one[0])
                     cover.append(best_one[1])
+                    for c_, l_ in best_one[2].items():
+                        nudge_map.setdefault(c_, []).extend(l_)
+                    fire_lines.extend((i, rr) for rr in best_one[3])
             else:
                 for e, sl in chosen:
                     r_ = side_path(i, e, sl, smp)
                     if r_ is not None:
                         built.append(r_[0])
                         cover.append(r_[1])
+                        for c_, l_ in r_[2].items():
+                            nudge_map.setdefault(c_, []).extend(l_)
+                        fire_lines.extend((i, rr) for rr in r_[3])
             fire_paths[i] = built
             diag["fire_sides"].append({"building": i, "required": need, "built": len(built), "coverage": cover})
 
@@ -517,31 +585,43 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
         if not changed:
             break
     all_paths = list(paths.values()) + extra
+    fire_keys = {k for k in paths if k[0] < n and isinstance(k[1], str) and k[1].startswith("s")}
+    skip_draw = {id(paths[k]) for k in fire_keys} if (p.fire_sides_enabled and fire_lines) else set()
 
     def node_width(v):
         s = served.get(v, set())
         cls = p.main_width if len(s) >= 2 else p.secondary_width
         return max([cls] + [fw[i] for i in s])
 
+    draw_xy = cell_xy.copy()
+    if p.fire_sides_enabled:
+        for c_, pl_ in nudge_map.items():
+            draw_xy[c_] = np.mean(pl_, axis=0)
     # полилинии одинаковой ширины -> полигоны (прямые углы: квадратные торцы, митра)
     lines_by_w, seen, total_len = {}, set(), 0.0
     for path in all_paths:
         run, run_w = [], None
+        drawn = id(path) not in skip_draw
         for u, v in zip(path[:-1], path[1:]):
             w = max(node_width(u), node_width(v))
             e = (min(u, v), max(u, v))
             if e not in seen:
                 seen.add(e)
                 total_len += seg_len(u, v)
+            if not drawn:
+                continue
             if run_w is not None and w != run_w:
-                lines_by_w.setdefault(run_w, []).append(LineString(run))
+                lines_by_w.setdefault(run_w, []).append(LineString(smooth_polyline(run, p.corner_radius_m, p.smooth_tol_m)))
                 run = [run[-1]]
             if not run:
-                run = [tuple(cell_xy[u])]
-            run.append(tuple(cell_xy[v]))
+                run = [tuple(draw_xy[u])]
+            run.append(tuple(draw_xy[v]))
             run_w = w
         if len(run) >= 2:
-            lines_by_w.setdefault(run_w, []).append(LineString(run))
+            lines_by_w.setdefault(run_w, []).append(LineString(smooth_polyline(run, p.corner_radius_m, p.smooth_tol_m)))
+    for i_, pts_ in fire_lines:                       # подъезд вдоль стен рисуем по ровному смещённому контуру, а не по ячейкам растра
+        if skip_draw:
+            lines_by_w.setdefault(fw[i_], []).append(LineString(smooth_polyline(pts_, p.corner_radius_m, p.smooth_tol_m)))
     carriageways = []
     road_polys = []
     for w, segs in sorted(lines_by_w.items()):
