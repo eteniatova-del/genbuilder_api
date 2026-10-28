@@ -46,14 +46,22 @@ def build_warnings(
                           f"Квартал {k}: не хватает озеленения {round(b['green_deficit_m2'])} м² до нормы.",
                           "landscape_diagnostics", k))
         if (b.get("parking_deficit_surface") or 0) > 0:
+            items = [u for u in (b.get("unplaced") or []) if str(u.get("object", "")).startswith("parking")]
+            by_house = "; ".join(
+                f"дом {u.get('house_index')}: {'гостевые' if u['object'] == 'parking_guest' else 'постоянные'} {u['placed']} из {u['required']}"
+                for u in items)
             out.append(_w("parking_deficit", ERROR,
-                          f"Квартал {k}: не размещено {b['parking_deficit_surface']} наземных машино-мест.",
-                          "landscape_diagnostics", k))
+                          f"Квартал {k}: не размещено {b['parking_deficit_surface']} наземных машино-мест" + (f" ({by_house})." if by_house else "."),
+                          "landscape_diagnostics", k, {"unplaced": items} if items else None))
         roads = b.get("roads") or {}
         if roads.get("unreachable"):
             out.append(_w("buildings_without_road", ERROR,
                           f"Квартал {k}: к {len(roads['unreachable'])} зданиям не удалось подвести проезд.",
                           "landscape_diagnostics", k, {"buildings": roads["unreachable"]}))
+        if roads.get("parking_unlinked"):
+            out.append(_w("parking_not_linked", ERROR,
+                          f"Квартал {k}: {len(roads['parking_unlinked'])} пятен парковки не удалось соединить с проездом.",
+                          "landscape_diagnostics", k, {"patches": roads["parking_unlinked"]}))
         if roads.get("turnaround_violations"):
             out.append(_w("turnaround_too_close", WARNING,
                           f"Квартал {k}: {len(roads['turnaround_violations'])} разворотных площадок ближе 5 м к стене.",
@@ -64,8 +72,16 @@ def build_warnings(
                           "landscape_diagnostics", k, {"dead_ends": roads["dead_end_violations"]}))
         for c in b.get("checks") or []:
             if c.get("status") in ("fail", "warn"):
-                out.append(_w("check_" + str(c.get("id")), ERROR if c["status"] == "fail" else WARNING,
-                              f"Квартал {k}: {c.get('title') or c.get('id')}: нарушений {c.get('violations_count', 0)}.",
-                              "landscape_diagnostics.checks", k,
-                              {"check": c.get("id"), "status": c.get("status")}))
+                msg = f"Квартал {k}: {c.get('title') or c.get('id')}: нарушений {c.get('violations_count', 0)}."
+                det = {"check": c.get("id"), "status": c.get("status")}
+                if c.get("id") == "fire_access_sides":
+                    det["violations"] = c.get("violations")
+                    why = "; ".join(
+                        f"здание {v.get('building')}: охват сторон {v.get('coverage')}" +
+                        (", мешает здание " + ", ".join(f"{x['building']} ({x['distance_m']} м)" for x in v["blocked_by"]) if v.get("blocked_by") else "")
+                        for v in (c.get("violations") or []))
+                    if why:
+                        msg += " " + why + "."
+                out.append(_w("check_" + str(c.get("id")), ERROR if c["status"] == "fail" else WARNING, msg,
+                              "landscape_diagnostics.checks", k, det))
     return out

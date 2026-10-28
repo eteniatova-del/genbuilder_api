@@ -121,6 +121,15 @@ def test_parking_type_surface_reports_deficit_instead_of_going_underground():
     d = res["diagnostics"]
     assert d["underground_share"] == 0
     assert d["parking_deficit_surface"] > 0
+    items = d["unplaced"]                                         # что именно не разместилось: дом, сколько нужно и сколько размещено
+    assert items and all(u["short"] > 0 and u["required"] > u["placed"] for u in items)
+    assert sum(u["short"] for u in items if u["object"].startswith("parking")) == d["parking_deficit_surface"]
+    assert {"object", "required", "placed", "short", "reason"} <= set(items[0])
+
+
+def test_unplaced_is_empty_when_everything_fits():
+    res = generate_landscape(BLOCK, HOUSES, 600, LandscapeParams(parking_type="mixed"))
+    assert res["diagnostics"]["unplaced"] == []
 
 
 def test_apply_landscape_returns_parking_attributes_per_building():

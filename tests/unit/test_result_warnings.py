@@ -26,3 +26,19 @@ def test_reports_shortage_of_residents_services_parking_green_and_roads():
 
 def test_handles_missing_inputs():
     assert build_warnings(None, None, None) == []
+
+
+def test_unplaced_parking_is_reported_per_house_and_unlinked_patches_and_blockers():
+    blocks = [{"block_index": 0, "green_deficit_m2": 0.0, "parking_deficit_surface": 12,
+               "unplaced": [{"object": "parking_permanent", "house_index": 3, "required": 40, "placed": 30, "short": 10},
+                            {"object": "parking_guest", "house_index": 3, "required": 5, "placed": 3, "short": 2}],
+               "roads": {"unreachable": [], "turnaround_violations": [], "dead_end_violations": [],
+                         "parking_unlinked": [{"patch": 2, "gap_m": 7.5}]},
+               "checks": [{"id": "fire_access_sides", "title": "Подъезд", "status": "fail", "violations_count": 1,
+                           "violations": [{"building": 7, "coverage": [1.0, 0.7],
+                                           "blocked_by": [{"building": 12, "distance_m": 13.3}]}]}]}]
+    ws = {w["code"]: w for w in build_warnings(None, None, blocks)}
+    assert "дом 3" in ws["parking_deficit"]["message"] and "постоянные 30 из 40" in ws["parking_deficit"]["message"]
+    assert "гостевые 3 из 5" in ws["parking_deficit"]["message"]
+    assert ws["parking_not_linked"]["severity"] == "error"
+    assert "мешает здание 12 (13.3 м)" in ws["check_fire_access_sides"]["message"]

@@ -543,7 +543,13 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
                             nudge_map.setdefault(c_, []).extend(l_)
                         fire_lines.extend((i, rr) for rr in r_[3])
             fire_paths[i] = built
-            diag["fire_sides"].append({"building": i, "required": need, "built": len(built), "coverage": cover})
+            rec_ = {"building": i, "required": need, "built": len(built), "coverage": cover}
+            if len(built) < need or any(c_ < 0.8 for c_ in cover):
+                # причина неполного подъезда: соседнее здание ближе, чем нужно для проезда с отступами с двух сторон
+                lim_ = ring_d(i) + (p.wall_gap_high[0] if heights[i] > p.high_building_m else p.wall_gap_low[0]) + half_w + 3.0
+                near_ = sorted(((float(bld_r[i].distance(bld_r[j])), j) for j in range(n) if j != i))
+                rec_["blocked_by"] = [{"building": j, "distance_m": round(d_, 1)} for d_, j in near_ if d_ < lim_][:3]
+            diag["fire_sides"].append(rec_)
 
     bkey = lambda i: min([db_all[a] for a in accesses[i]] or [1e9])
     order = sorted(range(n), key=bkey)

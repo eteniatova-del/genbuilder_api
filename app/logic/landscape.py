@@ -485,6 +485,18 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
         "assumptions": ["shrub sizes and step by species", "shrub belt/hedge offsets", "tree_crown_d", "tree_wall_buffer", "tree_spacing", "cell 2.5x10", "window_setback (SanPiN, secondary)",
                         "guest_gap", "patch_gap", "underground parking: places only, area norm not set"],
     }
+    # что не удалось разместить: объект, требуемое и размещённое количество, причина (используется в result_warnings)
+    unplaced = []
+    for h_ in houses_diag:
+        for obj_, req_, got_ in (("parking_permanent", h_["permanent_surface_required"], h_["permanent_surface"]),
+                                 ("parking_guest", h_["guest_required"], h_["guest_places"])):
+            if req_ - got_ > 0:
+                unplaced.append({"object": obj_, "house_index": h_["house_index"], "required": req_, "placed": got_, "short": req_ - got_,
+                                 "reason": "нет свободного места в радиусе пешеходной доступности с учётом отступов от окон и стен"})
+    if diag["green_deficit_m2"] > 0:
+        unplaced.append({"object": "greenery", "required": round(d["green_required_m2"], 1), "placed": round(max(lawn_area, 0.0), 1),
+                         "short": diag["green_deficit_m2"], "reason": "газон после вычета парковок, проездов и площадок меньше нормы"})
+    diag["unplaced"] = unplaced
     # parking_cells: по одному полигону на пятно (объединение ячеек) — для деревьев и вывода
     cells_out = [pt["geometry"] for pt in patches]
     return {"parking_cells": cells_out, "parking_patches": [
