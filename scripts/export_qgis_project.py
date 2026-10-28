@@ -71,7 +71,8 @@ for name, color in {layers}:
         cats = [QgsRendererCategory("underground", fsym("#a0522d"), "подземная парковка"),
                 QgsRendererCategory("mixed", fsym("#cd853f"), "подземная и наземная"),
                 QgsRendererCategory("surface", fsym("#e9c9a0"), "только наземная"),
-                QgsRendererCategory("", fsym(color), "прочие (сервисы и др.)")]
+                QgsRendererCategory("none", fsym("#9b6bb5"), "сервисы и прочие (парковки нет)"),
+                QgsRendererCategory("", fsym("#9b6bb5"), "прочие")]
         lyr.setRenderer(QgsCategorizedSymbolRenderer("parking_class", cats))
     else:
         lyr.renderer().setSymbol(QgsFillSymbol.createSimple({{"color": color, "outline_color": "#333333", "outline_width": "0.1"}}))
