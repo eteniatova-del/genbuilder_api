@@ -121,6 +121,8 @@ def merge_generation_result(result: dict | None) -> dict:
             *_build_excluded_features(selected_fc),
         ],
     }
+    if isinstance(result, dict) and isinstance(result.get("warnings"), list):
+        response["warnings"] = result["warnings"]
     if isinstance(result, dict) and isinstance(result.get("service_diagnostics"), dict):
         response["service_diagnostics"] = result["service_diagnostics"]
     if isinstance(result, dict):

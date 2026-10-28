@@ -15,6 +15,7 @@ from app.exceptions.http_exception_wrapper import http_exception
 from app.logic.physical_objects_service import PhysicalObjectsService
 from app.schema.dto import BlockFeatureCollection
 from app.api.urbandb_api_gateway import UrbanDBAPI
+from app.logic.result_warnings import build_warnings
 from app.logic.generation_params import ParamsProvider
 
 from app.logic.building_params import (
@@ -203,6 +204,8 @@ class Genbuilder:
                 response.update(landscape_payload)
             if capacity_payload is not None:
                 response["capacity_diagnostics"] = capacity_payload
+            lb = ((landscape_payload or {}).get("landscape_diagnostics") or {}).get("blocks")
+            response["warnings"] = build_warnings(capacity_payload, service_diagnostics, lb)
             return response
 
         def normalize_selected_features_payload(selected: object) -> dict:

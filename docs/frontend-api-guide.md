@@ -1076,6 +1076,7 @@ data: {"status":"queued","job_id":"01K2...","status_url":"https://facades.exampl
 | `generated_roads` | Только при `roads_enabled`: `kind` = `carriageway` (`width_m`, `road_class`: `main`/`secondary`) или `turnaround` |
 | `landscape_diagnostics` | `disclaimer` и `blocks[]`: потребность и размещение мест, доля подземных, дефициты, число деревьев и кустарников по видам, сводка проверок `checks_summary` (`pass`/`unverified`/`warn`/`fail`) и список `checks` |
 | `capacity_diagnostics` | Помещается ли запрошенное число жителей на территории (приходит, если в целях задано `residents`, независимо от `landscape_enabled`): `status` (`ok` / `insufficient_area`), `residents_requested`, `residents_placed`, `residents_shortfall`, `warning`. Допуск 3 %. При `insufficient_area` клиенту следует показать `warning` пользователю |
+| `warnings` | Единый список всего, что не поместилось или нарушает проверки: не размещены жители или сервисы, дефицит озеленения и парковок, здания без проезда, площадки ближе 5 м к стене, проваленные проверки. Элемент: `code`, `severity` (`error` / `warning`), `message` (русский текст для показа пользователю), `source` (поле с подробностями), при необходимости `block_index` и `details`. Пустой список — сообщать нечего. Приходит всегда, не только при `landscape_enabled` |
 
 Каждая проверка в `checks` содержит `id`, `status`, `basis` (`norm` — текст СП 42
 проверен, `secondary` — вторичный источник, `assumption` — допущение модели),

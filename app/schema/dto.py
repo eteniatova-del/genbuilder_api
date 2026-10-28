@@ -457,6 +457,15 @@ class BuildingFeatureCollection(BaseModel):
             "and `roads_enabled` are set. Sketch-level network, see `landscape_diagnostics`."
         ),
     )
+    warnings: Optional[list] = Field(
+        default=None,
+        description=(
+            "Single list of everything that did not fit or violates a check: not all residents placed, services not placed, "
+            "greenery or parking deficit, buildings without road, turnarounds too close to walls, failed checks. "
+            "Each item: `code`, `severity` (`error` | `warning`), `message` (Russian text), `source` (field with details), "
+            "optional `block_index` and `details`. Empty list means nothing to report."
+        ),
+    )
     capacity_diagnostics: Optional[dict] = Field(
         default=None,
         description=(
