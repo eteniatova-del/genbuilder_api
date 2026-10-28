@@ -39,6 +39,17 @@ def build_warnings(
         out.append(_w("services_not_placed", ERROR, msg, "service_diagnostics",
                       details={"unplaced_by_reason": by_reason, "capacity_unplaced": services.get("capacity_unplaced")}))
 
+    acc = (services or {}).get("access") or {}
+    if acc.get("violations"):
+        by = {}
+        for v in acc["violations"]:
+            by.setdefault(v["service"], []).append(v)
+        parts = "; ".join(f"{n}: домов дальше {lst[0]['limit_m']:.0f} м — {len(lst)} (макс. {max(x['distance_m'] for x in lst):.0f} м)"
+                          for n, lst in by.items())
+        out.append(_w("service_access_distance", WARNING,
+                      f"Территориальная доступность сервисов (по прямой, предварительная оценка; норма — пешеходная): {parts}.",
+                      "service_diagnostics", details={"violations": acc["violations"][:20]}))
+
     for b in landscape_blocks or []:
         k = b.get("block_index")
         if (b.get("green_deficit_m2") or 0) > 0:

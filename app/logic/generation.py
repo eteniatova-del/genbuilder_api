@@ -16,6 +16,7 @@ from app.logic.physical_objects_service import PhysicalObjectsService
 from app.schema.dto import BlockFeatureCollection
 from app.api.urbandb_api_gateway import UrbanDBAPI
 from app.logic.result_warnings import build_warnings
+from app.logic.service_access import check_service_access
 from app.logic.generation_params import ParamsProvider
 
 from app.logic.building_params import (
@@ -205,6 +206,10 @@ class Genbuilder:
             if capacity_payload is not None:
                 response["capacity_diagnostics"] = capacity_payload
             lb = ((landscape_payload or {}).get("landscape_diagnostics") or {}).get("blocks")
+            try:
+                service_diagnostics["access"] = check_service_access(buildings_fc)
+            except Exception as exc:  # проверка не должна ронять генерацию
+                logger.warning("service access check failed: {}", exc)
             response["warnings"] = build_warnings(capacity_payload, service_diagnostics, lb)
             return response
 
