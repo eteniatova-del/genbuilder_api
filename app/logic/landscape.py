@@ -253,12 +253,14 @@ def _place_for_house(n, free, bu_u, taken, target, p, guest=False, depth=0, near
     return p1 + p2, k1 + k2, max(s1, s2)
 
 
-def _place_trees(lawn, buildings_u, parking_u, p, carriageway=None, walkways=None):
+def _place_trees(lawn, buildings_u, parking_u, p, carriageway=None, walkways=None, fire_zone=None):
     wall = p.tree_wall_buffer if p.tree_wall_buffer is not None else max(5.0, p.tree_crown_d / 2)
     step = p.tree_spacing if p.tree_spacing is not None else p.tree_crown_d
     zone = lawn
     if buildings_u is not None:
         zone = zone.difference(buildings_u.buffer(wall))
+    if fire_zone is not None and not fire_zone.is_empty:       # СП 4.13130 п. 8.1.2: нет деревьев между проездом и стеной
+        zone = zone.difference(fire_zone)
     if parking_u is not None and not parking_u.is_empty:
         zone = zone.difference(parking_u.buffer(p.tree_parking_buffer))
     if carriageway is not None and not carriageway.is_empty:   # СП 42 табл. 6.3: 2,0 м от края проезжей части
@@ -427,7 +429,16 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
             lawn = lawn.difference(parking_u)
         lawn_area = lawn.area - d["platforms_reserved_m2"]
         carriageway = road_u
-    trees, wall, step = _place_trees(lawn, bu, parking_u, p, carriageway, walkways)
+    fire_zone = None
+    if roads is not None and road_inputs is not None and carriageway is not None and not carriageway.is_empty:
+        rp_ = road_inputs["params"]
+        zs_ = []
+        for g_, f_ in zip(buildings, road_inputs["floors"]):
+            lo_, hi_ = rp_.wall_gap_high if (float(f_) * rp_.floor_height) > rp_.high_building_m else rp_.wall_gap_low
+            # полоса между стеной и проездом: не дальше hi от стены и не дальше (hi-lo)+запас от края проезда
+            zs_.append(g_.buffer(hi_).intersection(carriageway.buffer(hi_ - lo_ + 1.0)))
+        fire_zone = unary_union(zs_) if zs_ else None
+    trees, wall, step = _place_trees(lawn, bu, parking_u, p, carriageway, walkways, fire_zone)
     shrubs = _place_shrubs(lawn, buildings, [unary_union(pt["cells"]) for pt in patches], carriageway, walkways, p)
     houses_diag.sort(key=lambda h: h["house_index"])
     perm_surface = sum(h["permanent_surface_required"] for h in houses_diag)

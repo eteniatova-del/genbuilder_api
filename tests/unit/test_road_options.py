@@ -42,9 +42,16 @@ def test_turn_penalty_does_not_break_reachability():
 def test_patch_near_existing_road_gets_no_extra_stub():
     base = generate_roads(BLOCK, HOUSES, [5] * 4)
     road = unary_union([c["geometry"] for c in base["carriageways"]])
-    pt = road.representative_point()
-    cands = [box(pt.x + dx - 2, pt.y + dy - 2, pt.x + dx + 2, pt.y + dy + 2) for dx, dy in ((8, 0), (-8, 0), (0, 8), (0, -8))]
-    patch = next(c for c in cands if BLOCK.contains(c) and not any(c.intersects(h.buffer(8)) for h in HOUSES) and c.distance(road) > 3)
+    patch = None
+    rings = [pg.exterior for pg in (road.geoms if hasattr(road, "geoms") else [road])]
+    for k in range(40):   # точка на проезде, рядом с которой есть место для пятна вне зоны 8 м у домов
+        ring = rings[k % len(rings)]
+        pt = ring.interpolate((k // len(rings) + 0.5) / 20.0, normalized=True)
+        cands = [box(pt.x + dx - 2, pt.y + dy - 2, pt.x + dx + 2, pt.y + dy + 2) for dx, dy in ((8, 0), (-8, 0), (0, 8), (0, -8))]
+        patch = next((c for c in cands if BLOCK.contains(c) and not any(c.intersects(h.buffer(8)) for h in HOUSES) and c.distance(road) > 3), None)
+        if patch is not None:
+            break
+    assert patch is not None
     assert patch.distance(road) <= 12.0
     with_patch = generate_roads(BLOCK, HOUSES, [5] * 4, patches=[patch])
     assert with_patch["diagnostics"]["road_length_m"] <= base["diagnostics"]["road_length_m"] + 10.0

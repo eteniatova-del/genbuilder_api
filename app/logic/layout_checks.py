@@ -13,12 +13,12 @@ from app.logic.roads import RoadParams, fire_width_for
 
 # основание каждой проверки: norm — текст СП 42.13330 проверен; secondary — вторичный источник; assumption — допущение модели
 BASIS = {
-    "road_access_distance": "secondary", "road_width_fire": "secondary", "dead_end_limit": "norm",
+    "road_access_distance": "secondary", "road_width_fire": "secondary", "dead_end_limit": "norm", "fire_access_sides": "norm",
     "roads_connected": "assumption", "turnaround_free": "secondary", "roads_no_overlap": "assumption",
     "parking_near_road": "assumption", "parking_window_setback": "secondary", "parking_balance": "norm", "shrubs_buffers": "norm", "parking_walk_distance": "norm", "parking_edu_setback": "secondary",
     "trees_buffers": "assumption", "green_norm": "secondary", "near_street_axis": "assumption",
 }
-BASIS_NOTE = {"norm": "норма (СП 42, текст проверен)", "secondary": "вторичный источник, первоисточник не сверен",
+BASIS_NOTE = {"norm": "норма (СП 42.13330 / СП 4.13130, текст проверен)", "secondary": "вторичный источник, первоисточник не сверен",
               "assumption": "допущение модели, не норма"}
 
 
@@ -83,6 +83,13 @@ def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadPar
         dv = roads["diagnostics"].get("dead_end_violations", [])
         out.append(_res("dead_end_limit", "Тупиковые проезды не длиннее 150 м (СП 42 п. 8.49)", roads["diagnostics"].get("turnarounds", 0), dv,
                         f"наибольший тупик {roads['diagnostics'].get('max_dead_end_m')} м"))
+
+        # 3а. подъезд пожарных автомобилей с нужного числа сторон (СП 4.13130.2013 п. 8.1.1)
+        fs = roads["diagnostics"].get("fire_sides")
+        if fs is not None:
+            viol = [x for x in fs if x["built"] < x["required"] or any(c < 0.8 for c in x["coverage"])]
+            out.append(_res("fire_access_sides", "Подъезд пожарных автомобилей с требуемого числа сторон здания (СП 4.13130 п. 8.1.1)",
+                            len(fs), viol, "охват стороны считается выполненным при доле длины с проездом не менее 0,8"))
 
         # 4. все проезды связаны с улицей (границей квартала)
         viol = []

@@ -89,3 +89,36 @@ def test_tall_buildings_keep_8_m_wall_gap_and_low_ones_keep_5_m():
     for h, f in zip(HOUSES, floors):
         lo = 8.0 if f * 3.0 > 28.0 else 5.0
         assert h.distance(roads) >= lo - 0.5
+
+
+def _fs(res):
+    return {x["building"]: x for x in res["diagnostics"]["fire_sides"]}
+
+
+def test_fire_class_and_required_sides():
+    from app.logic.roads import fire_class, fire_sides_required
+    p = RoadParams()
+    poly = box(0, 0, 60, 14)
+    assert fire_class(None, p) == "F1.3"
+    assert fire_class("Детский сад", p) == "F1.1"
+    assert fire_sides_required(15.0, poly, None, p) == 1       # дом до 28 м: одна сторона
+    assert fire_sides_required(48.0, poly, None, p) == 2       # Ф1.3 от 28 м: две стороны
+    assert fire_sides_required(9.0, poly, "Школа", p) == 4     # Ф4.1: со всех сторон
+    assert fire_sides_required(9.0, box(0, 0, 150, 120), None, p) == 4   # площадь > 10 000 м2
+
+
+def test_fire_access_sides_are_built_along_the_walls():
+    houses = [box(120, 120, 200, 138), box(270, 120, 300, 138)]
+    res = generate_roads(BLOCK, houses, [16, 5], [None, "Школа"])
+    fs = _fs(res)
+    assert fs[0]["required"] == 2 and fs[0]["built"] == 2
+    assert fs[1]["required"] == 4 and fs[1]["built"] == 4
+    assert all(c >= 0.8 for x in fs.values() for c in x["coverage"])
+    roads = _union(res)
+    for h, gap in zip(houses, (8.0, 5.0)):
+        assert h.distance(roads) >= gap - 1e-6
+
+
+def test_low_house_gets_one_fire_side():
+    res = generate_roads(BLOCK, [box(120, 120, 200, 138)], [5])
+    assert _fs(res)[0]["required"] == 1 and _fs(res)[0]["built"] == 1

@@ -272,14 +272,20 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
         from scipy.spatial import cKDTree
         tree = cKDTree(cell_xy)
 
+        def ring_d(i):
+            """Расстояние оси подъезда от стены: середина нормативного диапазона, но не ближе границы запретной зоны
+            (она включает запас на угол проезда), иначе вдоль стены нет ни одной разрешённой ячейки."""
+            lo_ = (p.wall_gap_high[0] if heights[i] > p.high_building_m else p.wall_gap_low[0]) + half_w + p.cell * 0.5
+            return max(_gap_mid(heights[i], p) + fw[i] / 2.0, lo_)
+
         def ring_samples(i):
             """Точки контура здания, смещённого на расстояние подъезда (внешний контур), и ближайшие разрешённые ячейки."""
-            target = _gap_mid(heights[i], p) + fw[i] / 2.0
+            target = ring_d(i)
             ring = bld_r[i].buffer(target, join_style=2).exterior
             n_s = max(8, int(ring.length / (p.cell * 0.5)))
             pts_ = np.array([ring.interpolate(k * ring.length / n_s).coords[0] for k in range(n_s)])
             dd, ii = tree.query(pts_)
-            cells_ = np.where(dd <= p.cell * 0.75, ii, -1)
+            cells_ = np.where(dd <= p.cell * 1.0, ii, -1)
             return pts_, cells_, ring.length / n_s
 
         def bridge(a_c, b_c, mask):
@@ -315,7 +321,7 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
             sel_ = np.where((sd > 0) & (t >= -slack) & (t <= length + slack))[0]
             if len(sel_) < 2:
                 return None
-            target = _gap_mid(heights[i], p) + fw[i] / 2.0
+            target = ring_d(i)
             band = np.abs(dist_to_b[i] - target) <= p.cell * 2.0
             seq, found = [], 0
             for k in sel_:
