@@ -15,6 +15,7 @@
   разрывы стоянок от окон (СанПиН 2.2.1/2.1.1.1200-03 табл. 7.1.1 по вторичному источнику), ячейка парковки 2,5 x 10 м.
 Зачётная площадь озеленения = газон (решение автора); деревья/кустарники размещаются на газоне с буферами.
 """
+import random
 import pandas as pd
 import shapely
 from dataclasses import dataclass, field
@@ -40,6 +41,11 @@ class LandscapeParams:
     tree_carriageway_buffer: float = 2.0               # СП 42 табл. 6.3
     tree_parking_buffer: float = 0.7                   # СП 42 табл. 6.3
     tree_spacing: float | None = None                  # None -> crown_d, ASSUMPTION (нормы шага нет)
+    tree_density: float = 1.0                          # ASSUMPTION (пользовательский параметр, нормы нет): доля деревьев от полной сетки, 0..1
+    tree_zones: tuple = ("all",)                       # ASSUMPTION: где сажать: all | roads | parking | courtyards (можно несколько)
+    tree_zone_reach: float = 10.0                      # ASSUMPTION: «вдоль проездов» и «у парковок» = не дальше этого расстояния от края, м
+    tree_yard_reach: float = 30.0                      # ASSUMPTION: «дворовая территория» = не дальше этого расстояния от стен зданий, м
+    tree_seed: int | None = None                       # из GenParams.seed; None — недетерминированно
     cell_w: float = 2.5                                # ASSUMPTION: ячейка места с долей проезда 2,5 x 10 м = 25 м2
     cell_l: float = 10.0
     underground_step: float = 0.1
@@ -271,7 +277,7 @@ def _place_for_house(n, free, bu_u, taken, target, p, guest=False, depth=0, near
     return p1 + p2, k1 + k2, max(s1, s2)
 
 
-def _place_trees(lawn, buildings_u, parking_u, p, carriageway=None, walkways=None, fire_zone=None):
+def _place_trees(lawn, buildings_u, parking_u, p, carriageway=None, walkways=None, fire_zone=None, stats=None):
     wall = p.tree_wall_buffer if p.tree_wall_buffer is not None else max(5.0, p.tree_crown_d / 2)
     step = p.tree_spacing if p.tree_spacing is not None else p.tree_crown_d
     zone = lawn
@@ -287,6 +293,11 @@ def _place_trees(lawn, buildings_u, parking_u, p, carriageway=None, walkways=Non
         zone = zone.difference(walkways.buffer(p.tree_parking_buffer))
     if zone.is_empty:
         return [], wall, step
+    zone = _restrict_tree_zone(zone, buildings_u, parking_u, carriageway, walkways, p)
+    if zone.is_empty:
+        if stats is not None:
+            stats["trees_full_grid"] = 0
+        return [], wall, step
     minx, miny, maxx, maxy = zone.bounds
     pts = []
     row = 0
@@ -301,7 +312,36 @@ def _place_trees(lawn, buildings_u, parking_u, p, carriageway=None, walkways=Non
         y += step * sqrt(3) / 2
         row += 1
     # жёсткая проверка шага (гекс-сетка даёт step, но у краёв после фильтрации оставляем как есть)
+    if stats is not None:
+        stats["trees_full_grid"] = len(pts)
+    dens = min(1.0, max(0.0, float(p.tree_density)))
+    if dens < 1.0 and pts:
+        keep = int(round(len(pts) * dens))
+        idx = sorted(random.Random(p.tree_seed).sample(range(len(pts)), keep))
+        pts = [pts[i] for i in idx]
     return pts, wall, step
+
+
+def _restrict_tree_zone(zone, buildings_u, parking_u, carriageway, walkways, p):
+    """Ограничивает область посадки выбранными зонами (tree_zones); «all» — без ограничения.
+
+    roads: полоса tree_zone_reach вдоль проездов и дорожек; parking: полоса вдоль пятен парковки;
+    courtyards: не дальше tree_yard_reach от стен зданий. Расстояния — допущения, норм нет."""
+    zones = set(p.tree_zones or ("all",))
+    if "all" in zones:
+        return zone
+    parts = []
+    if "roads" in zones:
+        src = [g for g in (carriageway, walkways) if g is not None and not g.is_empty]
+        if src:
+            parts.append(unary_union(src).buffer(p.tree_zone_reach))
+    if "parking" in zones and parking_u is not None and not parking_u.is_empty:
+        parts.append(parking_u.buffer(p.tree_zone_reach))
+    if "courtyards" in zones and buildings_u is not None and not buildings_u.is_empty:
+        parts.append(buildings_u.buffer(p.tree_yard_reach))
+    if not parts:
+        return zone.difference(zone)
+    return zone.intersection(unary_union(parts))
 
 
 def _place_shrubs(lawn, buildings, patches_geoms, road_u, walkways, p):
@@ -456,7 +496,8 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
             # полоса между стеной и проездом: не дальше hi от стены и не дальше (hi-lo)+запас от края проезда
             zs_.append(g_.buffer(hi_).intersection(carriageway.buffer(hi_ - lo_ + 1.0)))
         fire_zone = unary_union(zs_) if zs_ else None
-    trees, wall, step = _place_trees(lawn, bu, parking_u, p, carriageway, walkways, fire_zone)
+    tree_stats = {}
+    trees, wall, step = _place_trees(lawn, bu, parking_u, p, carriageway, walkways, fire_zone, tree_stats)
     shrubs = _place_shrubs(lawn, buildings, [pt["geometry"] for pt in patches], carriageway, walkways, p)
     houses_diag.sort(key=lambda h: h["house_index"])
     perm_surface = sum(h["permanent_surface_required"] for h in houses_diag)
@@ -474,11 +515,12 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
         "green_deficit_m2": round(max(0.0, d["green_required_m2"] - lawn_area), 1),
         "parking_deficit_surface": deficit,
         "trees": len(trees), "tree_wall_buffer_m": wall, "tree_spacing_m": step,
+        "trees_full_grid": tree_stats.get("trees_full_grid", len(trees)), "tree_density": p.tree_density, "tree_zones": list(p.tree_zones),
         "shrubs": len(shrubs),
         "shrubs_by_species": {n_: sum(1 for x in shrubs if x["species"] == n_) for n_ in sorted({x["species"] for x in shrubs})},
         "houses": houses_diag,
         "disclaimer": DISCLAIMER,
-        "assumptions": ["shrub sizes and step by species", "shrub belt/hedge offsets", "tree_crown_d", "tree_wall_buffer", "tree_spacing", "cell 2.5x10", "window_setback (SanPiN, secondary)",
+        "assumptions": ["shrub sizes and step by species", "shrub belt/hedge offsets", "tree_crown_d", "tree_wall_buffer", "tree_spacing", "tree_density", "tree_zones", "tree_zone_reach", "tree_yard_reach", "cell 2.5x10", "window_setback (SanPiN, secondary)",
                         "guest_gap", "patch_gap", "underground parking: places only, area norm not set"],
     }
     # что не удалось разместить: объект, требуемое и размещённое количество, причина (используется в result_warnings)
@@ -509,6 +551,9 @@ def landscape_params_from_generation(gen_params) -> LandscapeParams:
         housing_class=gen_params.housing_class,
         persons_per_apartment=gen_params.persons_per_apartment,
         tree_crown_d=float(gen_params.tree_crown_d),
+        tree_density=float(gen_params.tree_density),
+        tree_zones=tuple(gen_params.tree_zones),
+        tree_seed=gen_params.seed,
         parking_type=gen_params.parking_type,
         roads_enabled=gen_params.roads_enabled,
         floor_height=float(gen_params.floor_height_m),

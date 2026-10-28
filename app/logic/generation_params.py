@@ -46,6 +46,10 @@ class GenParams(BaseModel):
     """Assumed storey height (m) used to convert floors to building height for fire-access road width; not a norm."""
     tree_crown_d: float = 15.0
     """Mature crown diameter (m) of the planted tree; assumption, not a norm (Acer platanoides: 15-20 m)."""
+    tree_density: float = Field(1.0, ge=0.0, le=1.0)
+    """Share of trees kept from the full hexagonal grid (0..1); 1.0 - as before. User parameter (no norm), reported as an assumption. Thinning is random, driven by seed."""
+    tree_zones: list[Literal["all", "roads", "parking", "courtyards"]] = Field(default_factory=lambda: ["all"])
+    """Where trees may be planted: all (whole free lawn, as before), roads (strip along roads and paths), parking (strip along parking patches), courtyards (near house walls); several allowed. Strip widths are assumptions (landscape.py)."""
     shrubs_enabled: bool = True
     """If True (with landscape_enabled), shrubs are placed along building walls and parking patches (distances: SP 42, table 6.3)."""
     shrub_species: list[str] = Field(default_factory=lambda: ["spirea", "cotoneaster", "barberry", "lilac", "rose"])
