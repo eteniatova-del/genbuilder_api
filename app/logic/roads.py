@@ -48,6 +48,7 @@ class RoadParams:
     high_building_m: float = 28.0
     dead_end_max: float = 150.0               # СП 42 п. 8.49
     turnaround: float = 15.0                  # СП 4.13130 (вторичный): 15 x 15 м; СП 42 п. 8.50
+    close_dead_ends: bool = True              # длинные тупики закрываются вторым выходом на улицу; при False остаются промежуточные площадки (п. 8.1.11)
     stub_m: float = 5.0                       # ASSUMPTION: короткий отросток от сквозного проезда не считается тупиком (ни закрытия, ни площадки)
     turnaround_reach: float = 25.0            # ASSUMPTION: если у конца тупика места нет, площадка ищется вдоль проезда не дальше, м
     reuse_cost: float = 0.15                  # ASSUMPTION: относительная стоимость прохода по уже построенному проезду
@@ -610,8 +611,8 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
     def dead_ends(adj):
         deg = {v: len(nb) for v, nb in adj.items()}
         removed, parent = set(), {}
-        stack = [v for v, d in deg.items() if d == 1]
-        leaves0 = [v for v in stack if v != -1]
+        stack = [v for v, d in deg.items() if d == 1 and v != -1]      # улица (-1) — корень, её не «срезаем»: иначе тупик считается с конца улицы и длина равна 0
+        leaves0 = list(stack)
         while stack:
             v = stack.pop()
             if v in removed:
@@ -644,7 +645,7 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
         def _patch_only(ch):
             who_ = set().union(*[served.get(v, set()) for v in ch]) if ch else set()
             return bool(who_) and min(who_) >= n and p.road_style == "loop"
-        bad = [x for x in dead_ends(adjacency(all_paths)) if x[1] > max(limit, p.stub_m) and not _patch_only(x[2])]
+        bad = [x for x in dead_ends(adjacency(all_paths)) if x[1] > max(limit, p.stub_m) and not _patch_only(x[2])] if p.close_dead_ends else []
         if not bad:
             break
         bad.sort(key=lambda x: -x[1])
@@ -785,7 +786,33 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
         turn_r.append(sq)
         turn.append(Rinv(sq))
         if total > p.dead_end_max:
-            diag["dead_end_violations"].append({"leaf_xy": [round(float(x), 1), round(float(y), 1)], "dead_end_m": round(total, 1)})
+            # СП 4.13130 п. 8.1.11: на проезде длиннее 150 м предусматриваются ещё площадки не реже чем через 150 м
+            missing = 0
+            for k_ in range(1, int(total // p.dead_end_max) + 1):
+                if k_ * p.dead_end_max >= total:
+                    break
+                acc_, cell_ = 0.0, None
+                for a_, b_ in zip(chain[:-1], chain[1:]):
+                    acc_ += seg_len(a_, b_)
+                    if acc_ >= k_ * p.dead_end_max - p.cell:
+                        cell_ = b_
+                        break
+                placed_ = False
+                if cell_ is not None:
+                    x2, y2 = cell_xy[cell_]
+                    near2 = road_u.intersection(Point(x2, y2).buffer(p.turnaround_reach))
+                    for dx, dy in cands_far:
+                        c_ = box(x2 + dx - h, y2 + dy - h, x2 + dx + h, y2 + dy + h)
+                        if _fits(c_) and c_.intersects(near2) and all(c_.distance(t_) > 0 for t_ in turn_r):
+                            turn_r.append(c_)
+                            turn.append(Rinv(c_))
+                            placed_ = True
+                            break
+                if not placed_:
+                    missing += 1
+            diag["intermediate_turnarounds"] = diag.get("intermediate_turnarounds", 0) + int(total // p.dead_end_max) - missing
+            if missing:
+                diag["dead_end_violations"].append({"leaf_xy": [round(float(x), 1), round(float(y), 1)], "dead_end_m": round(total, 1), "missing_intermediate_turnarounds": missing})
     if p.kerb_radius_m and p.kerb_radius_m > 0 and (road_polys or turn_r):
         # закругление кромки на примыканиях: «замыкание» объединённой сети радиусом r; берутся только небольшие
         # заполнения во внутренних углах (не мосты между параллельными проездами) и не внутри зданий и парковок

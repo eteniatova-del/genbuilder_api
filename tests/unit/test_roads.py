@@ -194,3 +194,23 @@ def test_parking_patch_gets_a_link_to_the_road_edge():
     roads = unary_union([c["geometry"] for c in res["carriageways"]] + res["turnarounds"])
     assert patch.distance(roads) <= 0.3 + 1e-6
     assert d["unreachable"] == []
+
+
+def test_long_dead_end_gets_intermediate_turnarounds_every_150_m():
+    # СП 4.13130 п. 8.1.11: если проезд длиннее 150 м, ещё площадки не реже чем через 150 м
+    block = box(0, 0, 900, 900)
+    house = [box(400, 430, 480, 448)]
+    res = generate_roads(block, house, [5], None, RoadParams(close_dead_ends=False, fire_sides_enabled=False))
+    d = res["diagnostics"]
+    assert d["max_dead_end_m"] > 150.0
+    assert d["intermediate_turnarounds"] >= 1
+    assert d["dead_end_violations"] == []
+    assert len(res["turnarounds"]) >= 1 + d["intermediate_turnarounds"]
+
+
+def test_dead_end_length_is_measured_from_the_street_and_closed_by_a_second_exit():
+    block = box(0, 0, 900, 900)
+    res = generate_roads(block, [box(400, 430, 480, 448)], [5], None)
+    d = res["diagnostics"]
+    assert d["through_links_added"] >= 1          # единственный подъезд длиной ~400 м закрыт вторым выходом
+    assert d["max_dead_end_m"] <= 150.0
