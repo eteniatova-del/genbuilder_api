@@ -50,6 +50,7 @@ class LandscapeParams:
     parking_road_reach: float = 12.0                   # ASSUMPTION: пятна парковки предпочтительно не дальше этого расстояния от проезда
     patch_gap: float = 2.5                             # ASSUMPTION: зазор между пятнами разных домов, м
     search_step: float = 5.0                           # шаг перебора позиций пятна, м
+    lot_max_aspect: float = 4.0                                               # ASSUMPTION: отношение длинной стороны пятна к короткой не больше (без узких «лент»); 0 — без ограничения
     max_lot_places: int = 50                           # ASSUMPTION: стоянки делятся на лоты не более N мест; разрыв от окон берётся по размеру лота
     shrubs_enabled: bool = True
     # Виды: сообщение Смольного от 14.11.2024 (кустарники, высаженные Комитетом по благоустройству в 2024 г.: кизильник, барбарис, сирень, спирея, роза парковая).
@@ -119,12 +120,18 @@ DISCLAIMER = (
 def _shapes(n, p):
     """Компактные варианты пятна из n ячеек: (ширина, высота, число столбцов, число рядов, повёрнуто)."""
     out = []
-    for rows in range(1, 6):
+    for rows in range(1, 13):
         cols = ceil(n / rows)
-        if cols < rows:
+        if cols < rows and rows > 1:
             continue
         out.append((cols * p.cell_w, rows * p.cell_l, cols, rows, False))
         out.append((rows * p.cell_l, cols * p.cell_w, cols, rows, True))
+    if p.lot_max_aspect and p.lot_max_aspect > 0:           # без узких лент: берём формы с ограниченным отношением сторон
+        good = [sh for sh in out if max(sh[0], sh[1]) / min(sh[0], sh[1]) <= p.lot_max_aspect]
+        if good:
+            out = good
+        elif out:
+            out = [min(out, key=lambda sh: max(sh[0], sh[1]) / min(sh[0], sh[1]))]
     return out or [(n * p.cell_w, p.cell_l, n, 1, False)]
 
 

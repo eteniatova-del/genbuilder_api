@@ -160,3 +160,24 @@ def test_kerb_fillets_added_and_turnaround_corners_rounded():
     assert "kerb_fillets" not in sharp["diagnostics"]
     t_s, t_r = sharp["turnarounds"][0], soft["turnarounds"][0]
     assert t_r.area < t_s.area - 1.0                                      # углы площадки срезаны дугами
+
+
+def test_parking_shapes_are_compact():
+    from app.logic.landscape import _shapes
+    lp = LandscapeParams()
+    for n in (4, 13, 37, 73, 145):
+        for w, h, *_ in _shapes(n, lp):
+            assert max(w, h) / min(w, h) <= lp.lot_max_aspect + 1e-9      # без узких лент
+
+
+def test_parallel_second_lane_along_ring_is_dropped_and_joined_perpendicularly():
+    from app.logic.roads import drop_parallel, join_perpendicular
+    ring = LineString([(0, 0), (100, 0)])
+    # линия идёт вдоль кольца на расстоянии 7 м и выходит на него в конце
+    path = [(0, 40), (0, 7), (60, 7), (60, 0)]
+    pieces = drop_parallel(path, ring)
+    assert pieces and all(LineString(x).length > 2 for x in pieces)
+    total = sum(LineString(x).length for x in pieces)
+    assert total < LineString(path).length - 30                         # параллельный участок убран
+    out = join_perpendicular([(30, 40), (30, 20), (45, 10), (50, 1)], ring)
+    assert abs(out[-1][1]) < 1e-6 and abs(out[-2][1] - out[-1][1]) > 5   # последний отрезок идёт по нормали к кольцу

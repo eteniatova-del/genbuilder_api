@@ -109,6 +109,84 @@ def smooth_polyline(pts, radius: float, tol: float):
     return out
 
 
+def join_perpendicular(coords, ring, reach: float = 6.0, near: float = 3.0):
+    """Подводящий проезд входит в кольцо подъезда под прямым углом: если конец линии лежит на кольце, хвост, идущий
+    ближе reach к кольцу (вдоль него под малым углом, «двойная полоса»), заменяется прямым отрезком по нормали к кольцу."""
+    from shapely.ops import substring
+    ln = LineString(coords)
+    out = ln
+    for rev in (False, True):
+        cur = LineString(list(out.coords)[::-1]) if rev else out
+        end = Point(cur.coords[-1])
+        if ring.distance(end) > near:
+            continue
+        L = cur.length
+        s_ = 0.0
+        cut = None
+        while s_ < L:
+            if ring.distance(cur.interpolate(L - s_)) > reach:
+                cut = L - s_
+                break
+            s_ += 0.5
+        if cut is None or cut < 1.0:
+            continue
+        head = substring(cur, 0.0, cut)
+        pt = head.coords[-1]
+        foot = nearest_points(ring, Point(pt))[0]
+        new = list(head.coords) + [(foot.x, foot.y)]
+        out = LineString(new[::-1] if rev else new)
+    return list(out.coords)
+
+
+def drop_parallel(coords, ring, near: float = 12.0, min_len: float = 15.0, step: float = 0.5):
+    """Участки линии, идущие вдоль кольца подъезда ближе near на протяжении не менее min_len (лишняя «вторая полоса»),
+    убираются; оставшиеся части выходят на кольцо коротким отрезком по нормали."""
+    from shapely.ops import substring
+    ln = LineString(coords)
+    L = ln.length
+    if L < min_len or ring is None or ring.is_empty:
+        return [list(coords)]
+    n_s = int(L / step) + 1
+    ss = [min(k * step, L) for k in range(n_s + 1)]
+    inside = [ring.distance(ln.interpolate(x)) < near for x in ss]
+    cut, k = [], 0
+    while k < len(ss):
+        if inside[k]:
+            k0 = k
+            while k < len(ss) and inside[k]:
+                k += 1
+            if ss[k - 1] - ss[k0] >= min_len:
+                cut.append((ss[k0], ss[k - 1]))
+        else:
+            k += 1
+    ok_cut = []
+    for a, b in cut:                                    # режем только то, что не рвёт связность: у конца линии, лежащего вне кольца, участок не удаляется
+        if a <= 1e-6 and ring.distance(Point(ln.coords[0])) > 3.0:
+            continue
+        if b >= L - 1e-6 and ring.distance(Point(ln.coords[-1])) > 3.0:
+            continue
+        if a <= 1e-6 and b >= L - 1e-6:
+            continue
+        ok_cut.append((a, b))
+    cut = ok_cut
+    if not cut:
+        return [list(coords)]
+    pieces, pos = [], 0.0
+    for a, b in cut + [(L, L)]:
+        if a - pos > 2.0:
+            seg = substring(ln, pos, a)
+            c_ = list(seg.coords)
+            if pos > 0.0:                                   # начало куска примыкает к удалённому участку: выход на кольцо
+                fp = nearest_points(ring, Point(c_[0]))[0]
+                c_ = [(fp.x, fp.y)] + c_
+            if a < L:
+                fp = nearest_points(ring, Point(c_[-1]))[0]
+                c_ = c_ + [(fp.x, fp.y)]
+            pieces.append(c_)
+        pos = b
+    return pieces or []
+
+
 def fire_width_for(height_m: float, p: RoadParams) -> float:
     for lim, w in p.fire_width:
         if height_m <= lim:
@@ -600,6 +678,18 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
             draw_xy[c_] = np.mean(pl_, axis=0)
     # полилинии одинаковой ширины -> полигоны (прямые углы: квадратные торцы, митра)
     lines_by_w, seen, total_len = {}, set(), 0.0
+    fire_smooth = [(i_, smooth_polyline(pts_, p.corner_radius_m, p.smooth_tol_m)) for i_, pts_ in fire_lines] if skip_draw else []
+    ring_all = unary_union([LineString(c_) for _, c_ in fire_smooth]) if fire_smooth else None
+
+    def _emit(run_, w_):
+        cc = smooth_polyline(run_, p.corner_radius_m, p.smooth_tol_m)
+        parts_ = [cc]
+        if ring_all is not None and not ring_all.is_empty and p.fire_sides_enabled:
+            parts_ = [join_perpendicular(x, ring_all) for x in drop_parallel(cc, ring_all)]
+        for x in parts_:
+            if len(x) >= 2:
+                lines_by_w.setdefault(w_, []).append(LineString(x))
+
     for path in all_paths:
         run, run_w = [], None
         drawn = id(path) not in skip_draw
@@ -612,17 +702,16 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
             if not drawn:
                 continue
             if run_w is not None and w != run_w:
-                lines_by_w.setdefault(run_w, []).append(LineString(smooth_polyline(run, p.corner_radius_m, p.smooth_tol_m)))
+                _emit(run, run_w)
                 run = [run[-1]]
             if not run:
                 run = [tuple(draw_xy[u])]
             run.append(tuple(draw_xy[v]))
             run_w = w
         if len(run) >= 2:
-            lines_by_w.setdefault(run_w, []).append(LineString(smooth_polyline(run, p.corner_radius_m, p.smooth_tol_m)))
-    for i_, pts_ in fire_lines:                       # подъезд вдоль стен рисуем по ровному смещённому контуру, а не по ячейкам растра
-        if skip_draw:
-            lines_by_w.setdefault(fw[i_], []).append(LineString(smooth_polyline(pts_, p.corner_radius_m, p.smooth_tol_m)))
+            _emit(run, run_w)
+    for i_, cc_ in fire_smooth:                       # подъезд вдоль стен рисуем по ровному смещённому контуру, а не по ячейкам растра
+        lines_by_w.setdefault(fw[i_], []).append(LineString(cc_))
     carriageways = []
     road_polys = []
     for w, segs in sorted(lines_by_w.items()):
