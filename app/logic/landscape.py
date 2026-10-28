@@ -18,7 +18,7 @@
 import pandas as pd
 import shapely
 from dataclasses import dataclass, field
-from math import ceil, hypot, sqrt
+from math import ceil, cos, hypot, pi, sqrt
 from shapely.geometry import Polygon, Point, box
 from shapely.ops import nearest_points, unary_union
 
@@ -129,11 +129,10 @@ def _shapes(n, p):
 
 
 def _patch_cells(x, y, n, cols, rows, rot, p):
+    """Все cols x rows ячеек: пятно всегда полный прямоугольник (n — только нижняя граница числа мест)."""
     cells = []
     for r in range(rows):
         for c in range(cols):
-            if len(cells) >= n:
-                break
             if rot:
                 cells.append(box(x + r * p.cell_l, y + c * p.cell_w, x + (r + 1) * p.cell_l, y + (c + 1) * p.cell_w))
             else:
@@ -142,18 +141,32 @@ def _patch_cells(x, y, n, cols, rows, rot, p):
 
 
 def _find_patch(n, zone, target, p, touch=None):
-    """Одно компактное пятно из n ячеек в zone, ближайшее к target; None, если не помещается."""
+    """Одно пятно в zone, ближайшее к target: полный прямоугольник не меньше n ячеек; None, если не помещается.
+    Сначала пробуются формы с наименьшим числом лишних мест (при делимости n — ровно n), затем остальные."""
     if n <= 0 or zone.is_empty:
         return None
     if zone.area < n * p.cell_w * p.cell_l:       # свободной площади меньше, чем нужно местам: пятно заведомо не поместится
         return None
+    shapes = _shapes(n, p)
+    exc = min(sh[2] * sh[3] - n for sh in shapes)
+    for group in ([sh for sh in shapes if sh[2] * sh[3] - n == exc], [sh for sh in shapes if sh[2] * sh[3] - n > exc]):
+        if not group:
+            continue
+        best = _find_patch_shapes(n, zone, target, p, touch, group)
+        if best is not None:
+            x, y, cols, rows, rot = best
+            return _patch_cells(x, y, n, cols, rows, rot, p)
+    return None
+
+
+def _find_patch_shapes(n, zone, target, p, touch, shapes):
     from shapely.prepared import prep
     pz = prep(zone)
     minx, miny, maxx, maxy = zone.bounds
     step = p.search_step
     best, best_d = None, 1e18
     eroded = {}
-    for w, h, cols, rows, rot in _shapes(n, p):
+    for w, h, cols, rows, rot in shapes:
         # центр прямоугольника w x h, лежащего в зоне, отстоит от границы зоны не меньше чем на min(w, h) / 2:
         # если такой области нет, форма не помещается; иначе перебираем позиции только в границах этой области
         sd = min(w, h) / 2.0 - 1e-6
@@ -213,10 +226,12 @@ def _find_patch(n, zone, target, p, touch=None):
                         best, best_d = (x, y, cols, rows, rot), d
                 y += step
             x += step
-    if best is None:
-        return None
-    x, y, cols, rows, rot = best
-    return _patch_cells(x, y, n, cols, rows, rot, p)
+    return best
+
+
+def _buf_out(g, dist):
+    """Буфер, который не заходит внутрь радиуса dist: многоугольник описывается около окружности (иначе после аппроксимации дуг расстояние занижается на доли метра)."""
+    return g.buffer(dist / cos(pi / 64.0), quad_segs=16)
 
 
 def _place_for_house(n, free, bu_u, taken, target, p, guest=False, depth=0, near=None, edu_u=None):
@@ -227,9 +242,9 @@ def _place_for_house(n, free, bu_u, taken, target, p, guest=False, depth=0, near
     sb = p.guest_gap if guest else _setback(n, p.window_setback)
     zone = free
     if bu_u is not None:
-        zone = zone.difference(bu_u.buffer(sb))
+        zone = zone.difference(_buf_out(bu_u, sb))
     if edu_u is not None and not edu_u.is_empty and not guest:   # школы и детские сады: 25/50 м (вторичный источник)
-        zone = zone.difference(edu_u.buffer(_setback(n, p.edu_setback)))
+        zone = zone.difference(_buf_out(edu_u, _setback(n, p.edu_setback)))
     # пешеходная доступность: гостевые ≤200 м до дома (СП 42 п. 8.125), постоянные ≤800 м (п. 8.113)
     zone = zone.intersection(target.buffer(p.walk_guest_m if guest else p.walk_permanent_m))
     if taken is not None and not taken.is_empty:
@@ -243,7 +258,7 @@ def _place_for_house(n, free, bu_u, taken, target, p, guest=False, depth=0, near
     if cells is None:
         cells = _find_patch(n, zone, target, p)
     if cells is not None:
-        return [cells], n, sb
+        return [cells], len(cells), sb
     if depth >= 2 or n < 2:
         return [], 0, sb
     h1 = n // 2
@@ -391,12 +406,12 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
             perm_surf = ceil(hd[i]["permanent_places"] * (1 - u))
             pc, placed, sb = _place_for_house(perm_surf, free, bu, taken, buildings[i], p, near=road_u, edu_u=edu_u)
             for c in pc:
-                patches.append({"house_index": i, "kind": "surface", "cells": c})
+                patches.append({"house_index": i, "kind": "surface", "cells": c, "geometry": unary_union(c).envelope})
             if pc:
                 taken = unary_union(([taken] if taken is not None else []) + [x for c in pc for x in c])
             gc, gplaced, _ = _place_for_house(hd[i]["guest_places"], free, bu, taken, buildings[i], p, guest=True, near=road_u, edu_u=edu_u)
             for c in gc:
-                patches.append({"house_index": i, "kind": "guest", "cells": c})
+                patches.append({"house_index": i, "kind": "guest", "cells": c, "geometry": unary_union(c).envelope})
             if gc:
                 taken = unary_union(([taken] if taken is not None else []) + [x for c in gc for x in c])
             deficit += (perm_surf - placed) + (hd[i]["guest_places"] - gplaced)
@@ -419,7 +434,7 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
         # второй проход: к каждому пятну парковки подводится проезд; газон и деревья считаются по итоговой сети
         from app.logic.roads import generate_roads
         roads = generate_roads(block, buildings, road_inputs["floors"], road_inputs.get("services"),
-                               road_inputs["params"], patches=[pt["geometry"] if "geometry" in pt else unary_union(pt["cells"]) for pt in patches])
+                               road_inputs["params"], patches=[pt["geometry"] for pt in patches])
         parts = [c["geometry"] for c in roads["carriageways"]] + list(roads["turnarounds"])
         parts = [g for g in parts if g is not None and not g.is_empty]
         road_u = unary_union(parts) if parts else None
@@ -439,7 +454,7 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
             zs_.append(g_.buffer(hi_).intersection(carriageway.buffer(hi_ - lo_ + 1.0)))
         fire_zone = unary_union(zs_) if zs_ else None
     trees, wall, step = _place_trees(lawn, bu, parking_u, p, carriageway, walkways, fire_zone)
-    shrubs = _place_shrubs(lawn, buildings, [unary_union(pt["cells"]) for pt in patches], carriageway, walkways, p)
+    shrubs = _place_shrubs(lawn, buildings, [pt["geometry"] for pt in patches], carriageway, walkways, p)
     houses_diag.sort(key=lambda h: h["house_index"])
     perm_surface = sum(h["permanent_surface_required"] for h in houses_diag)
 
@@ -464,9 +479,9 @@ def generate_landscape(block: Polygon, buildings: list, residents: float, p: Lan
                         "guest_gap", "patch_gap", "underground parking: places only, area norm not set"],
     }
     # parking_cells: по одному полигону на пятно (объединение ячеек) — для деревьев и вывода
-    cells_out = [unary_union(pt["cells"]) for pt in patches]
+    cells_out = [pt["geometry"] for pt in patches]
     return {"parking_cells": cells_out, "parking_patches": [
-        {"house_index": pt["house_index"], "kind": pt["kind"], "places": len(pt["cells"]), "geometry": unary_union(pt["cells"])}
+        {"house_index": pt["house_index"], "kind": pt["kind"], "places": len(pt["cells"]), "geometry": pt["geometry"]}
         for pt in patches], "lawn": lawn, "trees": trees, "shrubs": shrubs, "diagnostics": diag, "roads": roads}
 
 

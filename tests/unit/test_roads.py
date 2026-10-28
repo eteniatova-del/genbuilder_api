@@ -140,3 +140,23 @@ def test_corner_radius_zero_gives_square_corners_and_keeps_wall_gap():
     p = RoadParams(corner_radius_m=0.0, smooth_tol_m=0.0)
     res = generate_roads(BLOCK, HOUSES, [8] * 4, params=p) if False else generate_roads(BLOCK, HOUSES, [8] * 4, None, p)
     assert res["diagnostics"]["unreachable"] == []
+
+
+def test_parking_patches_are_full_rectangles():
+    lp = LandscapeParams(parking_type="surface", roads_enabled=True)
+    roads = generate_roads(BLOCK, HOUSES, [8] * 4)
+    res = generate_landscape(BLOCK, HOUSES, 900, lp, roads=roads, road_inputs={"floors": [8] * 4, "services": None, "params": RoadParams()})
+    assert res["parking_patches"]
+    for pt in res["parking_patches"]:
+        g = pt["geometry"]
+        assert abs(g.area - g.envelope.area) < 1e-6                      # прямоугольник, не Г-образная фигура
+        assert abs(g.area - pt["places"] * lp.cell_w * lp.cell_l) < 1e-3  # все ячейки заполнены
+
+
+def test_kerb_fillets_added_and_turnaround_corners_rounded():
+    sharp = generate_roads(BLOCK, HOUSES, [5] * 4, None, RoadParams(kerb_radius_m=0.0))
+    soft = generate_roads(BLOCK, HOUSES, [5] * 4, None, RoadParams(kerb_radius_m=6.0))
+    assert soft["diagnostics"].get("kerb_fillets", 0) > 0
+    assert "kerb_fillets" not in sharp["diagnostics"]
+    t_s, t_r = sharp["turnarounds"][0], soft["turnarounds"][0]
+    assert t_r.area < t_s.area - 1.0                                      # углы площадки срезаны дугами

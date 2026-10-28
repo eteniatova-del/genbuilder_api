@@ -96,7 +96,7 @@ def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadPar
         geoms = list(road_u.geoms) if road_u is not None and hasattr(road_u, "geoms") else ([road_u] if road_u is not None else [])
         for k, gm in enumerate(geoms):
             if gm.distance(block.boundary) > 2 * tol:
-                viol.append({"component": k, "distance_to_street_m": round(gm.distance(block.boundary), 1)})
+                viol.append({"component": k, "distance_to_street_m": round(gm.distance(block.boundary), 1), "area_m2": round(gm.area, 1), "xy": [round(gm.centroid.x, 1), round(gm.centroid.y, 1)]})
         out.append(_res("roads_connected", "Каждый участок сети проездов выходит на улицу (границу квартала)", len(geoms), viol))
 
         # 5. разворотные площадки свободны

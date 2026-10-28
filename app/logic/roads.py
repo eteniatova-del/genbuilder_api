@@ -62,6 +62,7 @@ class RoadParams:
     fire_all_sides_area_m2: float = 10000.0   # п. 8.1.1: площадь застройки более 10 000 м2 — со всех сторон
     fire_all_sides_width_m: float = 100.0     # п. 8.1.1: ширина более 100 м — со всех сторон (ширина = меньшая сторона, допущение)
     corner_radius_m: float = 6.0              # ASSUMPTION: радиус закругления оси проезда на поворотах, м (нормативное значение для внутриквартальных проездов не получено; 0 — без закруглений)
+    kerb_radius_m: float = 6.0                # ASSUMPTION: радиус закругления кромки проезжей части на примыканиях и углов разворотной площадки, м (СП 396.1325800 не получен; 0 — без закруглений)
     smooth_tol_m: float = 2.0                 # ASSUMPTION: допуск спрямления ступенчатой растровой линии, м (0 — не спрямлять)
     road_style: str = "minimal"               # minimal | loop: loop закрывает каждый тупик вторым выходом на улицу
     patch_reach: float = 12.0                 # ASSUMPTION: пятно парковки ближе этого расстояния к проезду отдельного заезда не получает
@@ -642,7 +643,7 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
     cands_far = sorted(((dx, dy) for dx in np.arange(-reach, reach + 1e-6, p.cell) for dy in np.arange(-reach, reach + 1e-6, p.cell)),
                        key=lambda t: hypot(*t))
     road_u = unary_union(road_polys) if road_polys else Point(0, 0).buffer(0)
-    turn = []
+    turn, turn_r = [], []
     for lf, total, chain in final:
         x, y = cell_xy[lf]
         who_ = set().union(*[served.get(v, set()) for v in chain]) if chain else set()
@@ -676,9 +677,32 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
                 sq = sq.difference(pu)
             diag["turnaround_violations"].append(
                 {"leaf_xy": [round(float(x), 1), round(float(y), 1)], "wall_gap_m": round(float(bu.distance(sq)), 1)})
+        if p.kerb_radius_m and p.kerb_radius_m > 0 and not sq.is_empty:      # углы площадки скругляются (выпуклые углы)
+            rr = min(p.kerb_radius_m, h / 2.0)
+            sq_r = sq.buffer(-rr, join_style=1).buffer(rr, join_style=1)
+            if not sq_r.is_empty and sq_r.area > 0.8 * sq.area:
+                sq = sq_r.union(sq.intersection(road_u.buffer(1.0)))      # у въезда на площадку угол не срезаем: проезд не должен оторваться
+        turn_r.append(sq)
         turn.append(Rinv(sq))
         if total > p.dead_end_max:
             diag["dead_end_violations"].append({"leaf_xy": [round(float(x), 1), round(float(y), 1)], "dead_end_m": round(total, 1)})
+    if p.kerb_radius_m and p.kerb_radius_m > 0 and (road_polys or turn_r):
+        # закругление кромки на примыканиях: «замыкание» объединённой сети радиусом r; берутся только небольшие
+        # заполнения во внутренних углах (не мосты между параллельными проездами) и не внутри зданий и парковок
+        r_k = p.kerb_radius_m
+        allr = unary_union(list(road_polys) + turn_r)
+        closed = allr.buffer(r_k, join_style=1).buffer(-r_k, join_style=1)
+        walls_min = unary_union([g.buffer(p.wall_gap_low[0]) for g in low] + [g.buffer(p.wall_gap_high[0]) for g in tall])
+        fill = closed.difference(allr).difference(walls_min)      # заполнение не ближе нормативного отступа до стен
+        if pu is not None:
+            fill = fill.difference(pu)
+        pieces = [g for g in (fill.geoms if hasattr(fill, "geoms") else [fill]) if not g.is_empty and 0.5 < g.area <= 1.2 * r_k * r_k and g.distance(allr) < 0.05]   # только примыкающие к сети (без оторванных обрезков)
+        diag["kerb_fillets"] = len(pieces)
+        for g in pieces:
+            k_best = min(range(len(carriageways)), key=lambda k: carriageways[k]['geometry'].distance(Rinv(g))) if carriageways else None
+            if k_best is None:
+                continue
+            carriageways[k_best]["geometry"] = carriageways[k_best]["geometry"].union(Rinv(g))
     diag["max_dead_end_m"] = round(max([t for _, t, _ in final] or [0.0]), 1)
     diag["through_links_added"] = len(extra)
     diag["turnarounds"] = len(turn)
