@@ -8,6 +8,8 @@ fail — нарушено правило из норм или внутренни
 from shapely.ops import unary_union
 
 from app.logic.landscape import _setback
+from app.logic.fire_checks import (ARCH_SPACING_M, LOW_RISE_MAX_FLOORS, LOW_RISE_REACH_M, PASSAGE_SPACING_M,
+                                   continuous_fronts, find_courtyards, long_side)
 from app.logic.roads import RoadParams, fire_width_for
 
 
@@ -16,6 +18,7 @@ BASIS = {
     "road_access_distance": "norm", "road_width_fire": "norm", "dead_end_limit": "norm", "fire_access_sides": "norm",
     "roads_connected": "assumption", "turnaround_free": "norm", "roads_no_overlap": "assumption",
     "parking_near_road": "assumption", "parking_access": "assumption", "parking_window_setback": "secondary", "parking_balance": "norm", "shrubs_buffers": "norm", "parking_walk_distance": "norm", "parking_edu_setback": "secondary",
+    "fire_courtyard_access": "assumption", "fire_arches_300m": "assumption", "fire_passages_100m": "norm", "fire_low_rise_50m": "norm",
     "trees_buffers": "assumption", "green_norm": "secondary", "near_street_axis": "assumption",
 }
 BASIS_NOTE = {"norm": "норма (СП 42.13330 / СП 4.13130, текст проверен)", "secondary": "вторичный источник, первоисточник не сверен",
@@ -215,6 +218,41 @@ def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadPar
             viol.append({"shrub": k, "reason": "closer than 0.5 m to parking", "m": round(g.distance(pu), 2)})
     out.append(_res("shrubs_buffers", "Кустарники: 1,5 м от стен, 1,0 м от проезжей части, 0,5 м от стоянок (СП 42 табл. 6.3)", len(shrubs), viol,
                     "размеры кустов по видам и шаг — допущения; расстояния — норма"))
+
+    # 10б. дополнительные требования СП 4.13130 п. 8.1.9, 8.1.10, 8.1.12, 8.1.15 (универсально для любого квартала)
+    carr_all = unary_union([c["geometry"] for c in carr if c["geometry"] is not None and not c["geometry"].is_empty]
+                           + [t for t in (roads or {}).get("turnarounds", []) if t is not None and not t.is_empty]) if carr else None
+    viol = []
+    courts = find_courtyards(footprints)
+    for k, ct in enumerate(courts):
+        if carr_all is None or ct.intersection(carr_all).area < 1.0:
+            viol.append({"courtyard": k, "area_m2": round(ct.area, 1), "xy": [round(ct.centroid.x, 1), round(ct.centroid.y, 1)]})
+    out.append(_res("fire_courtyard_access", "Проезд в замкнутые и полузамкнутые дворы (СП 4.13130 п. 8.1.9)", len(courts), viol,
+                    "что считать замкнутым и полузамкнутым двором, в норме не определено: допущение (замыкание контура застройки на 10 м, не менее 70 % границы у зданий, не более одного открытого участка)"))
+    viol = []
+    fronts = continuous_fronts(footprints)
+    for idx, ln in fronts:
+        if ln > ARCH_SPACING_M:
+            viol.append({"buildings": idx, "front_length_m": round(ln, 1)})
+    out.append(_res("fire_arches_300m", "Непрерывный фронт застройки не длиннее 300 м без сквозных проездов (СП 4.13130 п. 8.1.10)", len(fronts), viol,
+                    "арки в модели не создаются; непрерывный фронт — здания ближе 3,5 м друг к другу (допущение); 180 м для реконструируемых районов не применялось",
+                    warn_only=True))
+    viol = []
+    for i, g in enumerate(footprints):
+        ln = long_side(g)
+        if ln > PASSAGE_SPACING_M:
+            viol.append({"building": i, "length_m": round(ln, 1)})
+    out.append(_res("fire_passages_100m", "Здание длиннее 100 м: сквозные проходы не реже чем через 100 м или гидранты с обеих продольных сторон (СП 4.13130 п. 8.1.12)",
+                    n, viol, "проходы внутри здания и гидранты в модели не заданы: предупреждение, длина — длинная сторона минимального прямоугольника",
+                    warn_only=True))
+    viol = []
+    low = [i for i in range(n) if floors[i] == floors[i] and floors[i] and floors[i] <= LOW_RISE_MAX_FLOORS and not (services and i < len(services) and services[i])]
+    for i in low:
+        d = footprints[i].distance(carr_all) if carr_all is not None else 1e9
+        if d > LOW_RISE_REACH_M:
+            viol.append({"building": i, "distance_to_road_m": round(d, 1) if d < 1e8 else None})
+    out.append(_res("fire_low_rise_50m", "Малоэтажная жилая застройка Ф1.4 (до 3 этажей): подъезд пожарной техники не дальше 50 м (СП 4.13130 п. 8.1.15)",
+                    len(low), viol, "расстояние от стены здания до проезжей части или разворотной площадки"))
 
     # 11. норма озеленения
     out.append(_res("green_norm", "Площадь газона не меньше нормы (3,0 м2/чел. по СП 476, сверить)", 1,
