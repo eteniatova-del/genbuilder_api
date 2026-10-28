@@ -38,6 +38,8 @@ _DIRS = ((1, 0), (0, 1), (-1, 0), (0, -1))     # (dx, dy) в ячейках: +x,
 
 @dataclass
 class RoadParams:
+    """Поля со ссылкой на пункт нормы — нормативные значения. Поля ASSUMPTION — внутренние константы метода (шаг растра, штрафы поиска пути, достройка съездов,
+    скругления): наружу через API не выводятся, на выполнение нормативных требований не влияют, выполнение норм проверяется в layout_checks."""
     cell: float = 2.5                         # шаг растра, м (ASSUMPTION точности расчёта)
     floor_height: float = 3.0                 # ASSUMPTION: высота этажа, м
     main_width: float = 6.0                   # СП 42 табл. 8.9: 2 полосы x 3,0 м
@@ -54,7 +56,6 @@ class RoadParams:
     reuse_cost: float = 0.15                  # ASSUMPTION: относительная стоимость прохода по уже построенному проезду
     turn_penalty: float = 20.0                # ASSUMPTION: штраф за поворот, м эквивалентной длины (К5)
     junction_penalty: float = 10.0            # ASSUMPTION: штраф за новую развилку, м (К4)
-    wide_building_m: float | None = None      # правило «шире 18 м» относится к зданиям Ф5 (СП 4.13130 п. 8.2.1, 123-ФЗ ст. 98); для жилья отключено
     fire_sides_enabled: bool = True           # СП 4.13130.2013 п. 8.1.1 (текст проверен): подъезд вдоль стен по всей длине стороны
     fire_class_by_service: tuple = (("детский сад", "F1.1"), ("дошкольн", "F1.1"), ("школа", "F4.1"),
                                     ("общеобразовательн", "F4.1"), ("поликлиник", "F3.4"))   # 123-ФЗ ст. 32 (текст проверен)
@@ -62,7 +63,6 @@ class RoadParams:
     fire_two_sides_public_m: float = 18.0     # п. 8.1.1 а): Ф1.2, Ф2.1, Ф2.2, Ф3, Ф4.2-4.4 высотой 18 м и более: две продольные стороны
     park_link_tol_m: float = 0.3              # зазор между пятном парковки и проездом, при превышении которого достраивается съезд, м
     park_link_max_m: float = 12.0             # ASSUMPTION: максимальная длина достраиваемого съезда к пятну, м
-    fire_all_sides_services: bool = False    # ASSUMPTION (опция): True — подъезд со всех сторон ко всем сервисным зданиям сверх п. 8.1.1; по умолчанию выключено (решение автора 28.10.2026: по норме)
     fire_all_sides_area_m2: float = 10000.0  # п. 8.1.1: площадь застройки более 10 000 м2 — со всех сторон
     fire_all_sides_width_m: float = 100.0     # п. 8.1.1: ширина более 100 м — со всех сторон (ширина = меньшая сторона, допущение)
     corner_radius_m: float = 6.0              # ASSUMPTION: радиус закругления оси проезда на поворотах, м (нормативное значение для внутриквартальных проездов не получено; 0 — без закруглений)
@@ -224,8 +224,6 @@ def fire_sides_required(height_m: float, poly, service, p: RoadParams) -> int:
     cls = fire_class(service, p)
     if cls in ("F1.1", "F4.1"):
         return 4
-    if service and p.fire_all_sides_services:
-        return 4           # ASSUMPTION (решение автора, 28.10.2026): все сервисные здания обслуживаются со всех сторон; по п. 8.1.1 для Ф3 ниже 18 м достаточно одной
     if poly.area > p.fire_all_sides_area_m2 or _short_side(poly) > p.fire_all_sides_width_m:
         return 4
     thr = p.fire_two_sides_f13_m if cls == "F1.3" else p.fire_two_sides_public_m
@@ -348,8 +346,7 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
         a1 = int(cand[np.argmin(db_all[cand])])
         acc = [a1]
         nm = (services[i] or "").lower() if services else ""
-        wide = p.wide_building_m is not None and _short_side(bld_r[i]) > p.wide_building_m
-        if ((p.edu_two_accesses and any(s in nm for s in EDU_SERVICES)) or wide) and len(cand) > 1:
+        if (p.edu_two_accesses and any(s in nm for s in EDU_SERVICES)) and len(cand) > 1:
             far = np.hypot(cell_xy[cand, 0] - cell_xy[a1, 0], cell_xy[cand, 1] - cell_xy[a1, 1])
             acc.append(int(cand[np.argmax(far)]))
         accesses.append(acc)

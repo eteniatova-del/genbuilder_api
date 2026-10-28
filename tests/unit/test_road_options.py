@@ -19,12 +19,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_gen_params_flow_into_road_params():
-    gp = GenParams(road_style="loop", road_turn_penalty_m=30.0, road_junction_penalty_m=5.0, road_reuse_cost=0.3,
-                   parking_reach_m=8.0, parking_max_lot_places=30, norm_mode="strict")
+    gp = GenParams(road_style="loop", norm_mode="strict")
     lp = landscape_params_from_generation(gp)
     rp = road_params(lp)
-    assert (rp.road_style, rp.turn_penalty, rp.junction_penalty, rp.reuse_cost, rp.patch_reach) == ("loop", 30.0, 5.0, 0.3, 8.0)
-    assert lp.max_lot_places == 30 and lp.norm_mode == "strict"
+    assert rp.road_style == "loop" and lp.norm_mode == "strict"
+
+
+def test_non_normative_tuning_parameters_are_not_exposed():
+    removed = {"road_turn_penalty_m", "road_junction_penalty_m", "road_reuse_cost", "parking_reach_m", "parking_max_lot_places"}
+    assert removed.isdisjoint(GenParams.model_fields)
 
 
 def test_loop_style_has_no_longer_dead_ends_than_minimal():

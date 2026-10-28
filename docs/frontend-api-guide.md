@@ -1053,11 +1053,8 @@ data: {"status":"queued","job_id":"01K2...","status_url":"https://facades.exampl
 | `persons_per_apartment` | число \| `null` | Если `null`, постоянные места считаются как 350 на 1000 жителей (СП 42 п. 8.113 прим. 2) |
 | `parking_type` | `underground` \| `surface` \| `mixed`, `mixed` | Вид парковки постоянных мест |
 | `parking_layout` | `along_roads` \| `free`, `along_roads` | `along_roads`: сначала проезды, пятна парковки примыкают к проезду |
-| `parking_reach_m` | число, `12.0` | Допущение: дальше этого расстояния пятно получает отдельный заезд |
-| `parking_max_lot_places` | целое, `50` | Допущение: предельный размер лота |
 | `roads_enabled` | bool, `false` | Внутриквартальные проезды (нужен `landscape_enabled`) |
 | `road_style` | `minimal` \| `loop`, `minimal` | `minimal` — кратчайшая сеть, тупики до 150 м; `loop` — тупики замыкаются вторым выходом |
-| `road_turn_penalty_m`, `road_junction_penalty_m`, `road_reuse_cost` | `20.0`, `10.0`, `0.15` | Допущения: штрафы поворота и развилки, стоимость прохода по готовому проезду |
 | `floor_height_m` | число, `3.0` | Допущение: высота этажа для пожарной ширины проезда |
 | `tree_crown_d` | число, `15.0` | Допущение: диаметр кроны дерева, м |
 | `shrubs_enabled` | bool, `true` | Кустарники |

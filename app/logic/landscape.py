@@ -51,7 +51,6 @@ class LandscapeParams:
     patch_gap: float = 2.5                             # ASSUMPTION: зазор между пятнами разных домов, м
     search_step: float = 5.0                           # шаг перебора позиций пятна, м
     lot_max_aspect: float = 4.0                                               # ASSUMPTION: отношение длинной стороны пятна к короткой не больше (без узких «лент»); 0 — без ограничения
-    max_lot_places: int = 50                           # ASSUMPTION: стоянки делятся на лоты не более N мест; разрыв от окон берётся по размеру лота
     shrubs_enabled: bool = True
     # Виды: сообщение Смольного от 14.11.2024 (кустарники, высаженные Комитетом по благоустройству в 2024 г.: кизильник, барбарис, сирень, спирея, роза парковая).
     # Размеры куста и шаг — ASSUMPTION: в найденных источниках размеров по видам нет. (id, название, латинское название, диаметр куста м, шаг посадки м)
@@ -76,9 +75,6 @@ class LandscapeParams:
     walk_guest_m: float = 200.0                        # СП 42 п. 8.125: от гостевых стоянок до входов в жилые дома
     touch_tol: float = 1.0                             # допуск «пятно примыкает к проезду», м
     road_style: str = "minimal"                        # minimal | loop
-    road_turn_penalty: float = 20.0                    # ASSUMPTION, м эквивалентной длины
-    road_junction_penalty: float = 10.0                # ASSUMPTION, м эквивалентной длины
-    road_reuse_cost: float = 0.15                      # ASSUMPTION
     norm_mode: str = "extended"                        # extended | strict (влияет на отчёт проверок)
     # ASSUMPTION (вторичный источник): разрыв открытой стоянки до окон по числу мест
     window_setback: tuple = ((10, 10.0), (50, 15.0), (100, 25.0), (300, 35.0), (10**9, 50.0))
@@ -517,16 +513,11 @@ def landscape_params_from_generation(gen_params) -> LandscapeParams:
         roads_enabled=gen_params.roads_enabled,
         floor_height=float(gen_params.floor_height_m),
         road_style=gen_params.road_style,
-        road_turn_penalty=float(gen_params.road_turn_penalty_m),
-        road_junction_penalty=float(gen_params.road_junction_penalty_m),
-        road_reuse_cost=float(gen_params.road_reuse_cost),
-        parking_road_reach=float(gen_params.parking_reach_m),
         parking_layout=gen_params.parking_layout,
         shrubs_enabled=gen_params.shrubs_enabled,
         shrub_species_ids=tuple(gen_params.shrub_species),
         shrub_wall_belt=gen_params.shrub_wall_belt,
         shrub_parking_hedge=gen_params.shrub_parking_hedge,
-        max_lot_places=int(gen_params.parking_max_lot_places),
         norm_mode=gen_params.norm_mode,
     )
 
@@ -534,9 +525,7 @@ def landscape_params_from_generation(gen_params) -> LandscapeParams:
 def road_params(p: "LandscapeParams"):
     """RoadParams из LandscapeParams (единое место передачи параметров проездов)."""
     from app.logic.roads import RoadParams
-    return RoadParams(floor_height=p.floor_height, road_style=p.road_style, turn_penalty=p.road_turn_penalty,
-                      junction_penalty=p.road_junction_penalty, reuse_cost=p.road_reuse_cost,
-                      patch_reach=p.parking_road_reach)
+    return RoadParams(floor_height=p.floor_height, road_style=p.road_style, patch_reach=p.parking_road_reach)
 
 
 def apply_landscape(blocks_utm, buildings_utm, la_per_person: float, p: LandscapeParams):
