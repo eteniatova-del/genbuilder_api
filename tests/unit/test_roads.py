@@ -105,8 +105,9 @@ def test_fire_class_and_required_sides():
     assert fire_sides_required(48.0, poly, None, p) == 2       # Ф1.3 от 28 м: две стороны
     assert fire_sides_required(9.0, poly, "Школа", p) == 4     # Ф4.1: со всех сторон
     assert fire_sides_required(9.0, box(0, 0, 150, 120), None, p) == 4   # площадь > 10 000 м2
-    assert fire_sides_required(15.0, poly, "Поликлиника", p) == 4        # допущение: все сервисы со всех сторон
-    assert fire_sides_required(15.0, poly, "Поликлиника", RoadParams(fire_all_sides_services=False)) == 1   # по п. 8.1.1: Ф3 ниже 18 м
+    assert fire_sides_required(15.0, poly, "Поликлиника", p) == 1        # по п. 8.1.1: Ф3 ниже 18 м — одна сторона
+    assert fire_sides_required(15.0, poly, "Поликлиника", RoadParams(fire_all_sides_services=True)) == 4   # опция: все сервисы со всех сторон
+    assert fire_sides_required(19.0, poly, "Поликлиника", p) == 2        # Ф3 от 18 м — две стороны
 
 
 def test_fire_access_sides_are_built_along_the_walls():
