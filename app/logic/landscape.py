@@ -16,8 +16,9 @@
 Зачётная площадь озеленения = газон (решение автора); деревья/кустарники размещаются на газоне с буферами.
 """
 import pandas as pd
+import shapely
 from dataclasses import dataclass, field
-from math import ceil, sqrt
+from math import ceil, hypot, sqrt
 from shapely.geometry import Polygon, Point, box
 from shapely.ops import nearest_points, unary_union
 
@@ -144,16 +145,41 @@ def _find_patch(n, zone, target, p, touch=None):
     """Одно компактное пятно из n ячеек в zone, ближайшее к target; None, если не помещается."""
     if n <= 0 or zone.is_empty:
         return None
+    if zone.area < n * p.cell_w * p.cell_l:       # свободной площади меньше, чем нужно местам: пятно заведомо не поместится
+        return None
     from shapely.prepared import prep
     pz = prep(zone)
     minx, miny, maxx, maxy = zone.bounds
     step = p.search_step
     best, best_d = None, 1e18
+    eroded = {}
     for w, h, cols, rows, rot in _shapes(n, p):
+        # центр прямоугольника w x h, лежащего в зоне, отстоит от границы зоны не меньше чем на min(w, h) / 2:
+        # если такой области нет, форма не помещается; иначе перебираем позиции только в границах этой области
+        sd = min(w, h) / 2.0 - 1e-6
+        if sd not in eroded:
+            eroded[sd] = zone.buffer(-sd)
+        ez = eroded[sd]
+        if ez.is_empty:
+            continue
+        shapely.prepare(ez)
+        tz = None
+        if touch is not None:                      # пятно дальше reach от проезда отбрасывается: центр обязан быть не дальше reach + полудиагональ
+            tz = touch.buffer(p.parking_road_reach + p.touch_tol + hypot(w, h) / 2.0)
+            shapely.prepare(tz)
+        ex0, ey0, ex1, ey1 = ez.bounds
         x = minx
-        while x + w <= maxx:
+        while x + w / 2.0 < ex0 - 1e-9:
+            x += step
+        while x + w <= maxx and x + w / 2.0 <= ex1 + 1e-9:
             y = miny
-            while y + h <= maxy:
+            while y + h / 2.0 < ey0 - 1e-9:
+                y += step
+            while y + h <= maxy and y + h / 2.0 <= ey1 + 1e-9:
+                cx_, cy_ = x + w / 2.0, y + h / 2.0
+                if not shapely.contains_xy(ez, cx_, cy_) or (tz is not None and not shapely.contains_xy(tz, cx_, cy_)):
+                    y += step
+                    continue
                 r = box(x, y, x + w, y + h)
                 if pz.contains(r):
                     if touch is not None:
