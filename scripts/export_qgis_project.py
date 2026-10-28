@@ -68,11 +68,11 @@ for name, color in {layers}:
         # дома с подземным паркингом окрашены иначе (атрибуты parking_class, underground_parking_places)
         def fsym(c):
             return QgsFillSymbol.createSimple({{"color": c, "outline_color": "#333333", "outline_width": "0.1"}})
-        cats = [QgsRendererCategory("underground", fsym("#a0522d"), "подземная парковка"),
-                QgsRendererCategory("mixed", fsym("#cd853f"), "подземная и наземная"),
-                QgsRendererCategory("surface", fsym("#e9c9a0"), "только наземная"),
-                QgsRendererCategory("none", fsym("#9b6bb5"), "сервисы и прочие (парковки нет)"),
-                QgsRendererCategory("", fsym("#9b6bb5"), "прочие")]
+        cats = [QgsRendererCategory("surface", fsym("#f08c2e"), "жилой дом: парковка только наземная"),
+                QgsRendererCategory("mixed", fsym("#c0601a"), "жилой дом: подземная и наземная парковка"),
+                QgsRendererCategory("underground", fsym("#7a3a10"), "жилой дом: только подземная парковка"),
+                QgsRendererCategory("none", fsym("#9b6bb5"), "сервис (школа, детский сад, поликлиника и др.)"),
+                QgsRendererCategory("", fsym("#9b6bb5"), "прочие здания")]
         lyr.setRenderer(QgsCategorizedSymbolRenderer("parking_class", cats))
     else:
         lyr.renderer().setSymbol(QgsFillSymbol.createSimple({{"color": color, "outline_color": "#333333", "outline_width": "0.1"}}))
