@@ -83,6 +83,14 @@ crs = QgsCoordinateReferenceSystem("EPSG:{crs}")
 project.setCrs(crs)
 iface.mapCanvas().setDestinationCrs(crs)
 # охват по зданиям; масштаб экранный, зависит от DPI монитора
+
+# порядок отрисовки (сверху вниз): без этого газон, залитый сплошным цветом, закрывает деревья, кусты и дома,
+# а полигоны подземной парковки (по контуру дома) закрывают цвет здания
+by_name = {{l.name(): l for l in layers}}
+order = [by_name[n] for n in ("roads", "buildings", "parking", "trees", "shrubs", "greenery") if n in by_name]
+root = project.layerTreeRoot()
+root.setHasCustomLayerOrder(True)
+root.setCustomLayerOrder(order + [l for l in layers if l not in order])
 ext = None
 blayer = None
 for l in layers:
@@ -93,6 +101,10 @@ if ext is not None:
     iface.mapCanvas().setExtent(iface.mapCanvas().mapSettings().layerExtentToOutputExtent(blayer, ext))
 iface.mapCanvas().zoomScale(SCALE)
 iface.mapCanvas().refresh()
+# активный слой и инструмент «Определить объекты», чтобы сразу можно было щёлкать по объектам (иначе активна «Рука»)
+if blayer is not None:
+    iface.setActiveLayer(blayer)
+    iface.actionIdentify().trigger()
 print("Открыто на масштабе 1:%d" % SCALE)
 '''
 
