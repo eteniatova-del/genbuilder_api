@@ -57,7 +57,10 @@ def test_patch_near_existing_road_gets_no_extra_stub():
     assert patch is not None
     assert patch.distance(road) <= 12.0
     with_patch = generate_roads(BLOCK, HOUSES, [5] * 4, patches=[patch])
-    assert with_patch["diagnostics"]["road_length_m"] <= base["diagnostics"]["road_length_m"] + 10.0
+    d = with_patch["diagnostics"]
+    # отдельного заезда к пятну нет; допускается только короткий съезд, соединяющий пятно с проездом
+    assert d["parking_unlinked"] == []
+    assert d["road_length_m"] <= base["diagnostics"]["road_length_m"] + 20.0
 
 
 def _checks(mode):

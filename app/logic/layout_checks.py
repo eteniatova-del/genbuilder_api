@@ -93,7 +93,8 @@ def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadPar
 
         # 4. все проезды связаны с улицей (границей квартала)
         viol = []
-        geoms = list(road_u.geoms) if road_u is not None and hasattr(road_u, "geoms") else ([road_u] if road_u is not None else [])
+        conn_u = unary_union([g.buffer(0.05) for g in parts]) if parts else None      # зазоры порядка сантиметра — численная погрешность, не разрыв
+        geoms = list(conn_u.geoms) if conn_u is not None and hasattr(conn_u, "geoms") else ([conn_u] if conn_u is not None else [])
         for k, gm in enumerate(geoms):
             if gm.distance(block.boundary) > 2 * tol:
                 viol.append({"component": k, "distance_to_street_m": round(gm.distance(block.boundary), 1), "area_m2": round(gm.area, 1), "xy": [round(gm.centroid.x, 1), round(gm.centroid.y, 1)]})

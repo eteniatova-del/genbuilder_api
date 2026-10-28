@@ -621,7 +621,7 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
             removed.add(v)
             parent[v] = (u, adj[v][u])
             deg[u] -= 1
-            if deg[u] == 1:
+            if deg[u] == 1 and u != -1:          # улицу (-1) не «срезаем» ни с какой стороны
                 stack.append(u)
         out = []
         for lf in leaves0:
@@ -871,6 +871,20 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
             carriageways.append({"width": p.secondary_width, "class": "secondary", "geometry": Rinv(lk)})   # перекрывается с сетью на 0,5 м: съезд не отрывается
             net_r = net_r.union(lk)
             diag["parking_links"] += 1
+    # оторванные обрезки (остатки после вычитания зданий и парковок) площадью меньше 3 м² убираются: проезд из них не состоит
+    all_geoms = [c["geometry"] for c in carriageways] + list(turn)
+    for k_, c_ in enumerate(carriageways):
+        parts_ = list(c_["geometry"].geoms) if hasattr(c_["geometry"], "geoms") else [c_["geometry"]]
+        keep_ = []
+        for g_ in parts_:
+            if g_.area < 3.0 and not any(o_ is not c_["geometry"] and o_.distance(g_) < 0.05 for o_ in all_geoms) \
+                    and not any(o_.distance(g_) < 0.05 for o_ in parts_ if o_ is not g_):
+                diag.setdefault("slivers_removed", 0)
+                diag["slivers_removed"] += 1
+                continue
+            keep_.append(g_)
+        if len(keep_) != len(parts_):
+            c_["geometry"] = unary_union(keep_) if keep_ else c_["geometry"].difference(c_["geometry"])
     diag["max_dead_end_m"] = round(max([t for _, t, _ in final] or [0.0]), 1)
     diag["through_links_added"] = len(extra)
     diag["turnarounds"] = len(turn)
