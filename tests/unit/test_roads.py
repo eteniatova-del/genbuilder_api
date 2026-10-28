@@ -105,6 +105,8 @@ def test_fire_class_and_required_sides():
     assert fire_sides_required(48.0, poly, None, p) == 2       # Ф1.3 от 28 м: две стороны
     assert fire_sides_required(9.0, poly, "Школа", p) == 4     # Ф4.1: со всех сторон
     assert fire_sides_required(9.0, box(0, 0, 150, 120), None, p) == 4   # площадь > 10 000 м2
+    assert fire_sides_required(15.0, poly, "Поликлиника", p) == 4        # допущение: все сервисы со всех сторон
+    assert fire_sides_required(15.0, poly, "Поликлиника", RoadParams(fire_all_sides_services=False)) == 1   # по п. 8.1.1: Ф3 ниже 18 м
 
 
 def test_fire_access_sides_are_built_along_the_walls():
@@ -181,3 +183,14 @@ def test_parallel_second_lane_along_ring_is_dropped_and_joined_perpendicularly()
     assert total < LineString(path).length - 30                         # параллельный участок убран
     out = join_perpendicular([(30, 40), (30, 20), (45, 10), (50, 1)], ring)
     assert abs(out[-1][1]) < 1e-6 and abs(out[-2][1] - out[-1][1]) > 5   # последний отрезок идёт по нормали к кольцу
+
+
+def test_parking_patch_gets_a_link_to_the_road_edge():
+    houses = [box(120, 120, 200, 138)]
+    patch = box(260, 60, 285, 100)          # пятно без прямого примыкания к проезду
+    res = generate_roads(BLOCK, houses, [16], None, patches=[patch])
+    d = res["diagnostics"]
+    assert d["parking_unlinked"] == []
+    roads = unary_union([c["geometry"] for c in res["carriageways"]] + res["turnarounds"])
+    assert patch.distance(roads) <= 0.3 + 1e-6
+    assert d["unreachable"] == []

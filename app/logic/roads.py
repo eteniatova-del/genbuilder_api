@@ -59,7 +59,10 @@ class RoadParams:
                                     ("общеобразовательн", "F4.1"), ("поликлиник", "F3.4"))   # 123-ФЗ ст. 32 (текст проверен)
     fire_two_sides_f13_m: float = 28.0        # п. 8.1.1 а): многоквартирные жилые Ф1.3 высотой 28 м и более: две продольные стороны
     fire_two_sides_public_m: float = 18.0     # п. 8.1.1 а): Ф1.2, Ф2.1, Ф2.2, Ф3, Ф4.2-4.4 высотой 18 м и более: две продольные стороны
-    fire_all_sides_area_m2: float = 10000.0   # п. 8.1.1: площадь застройки более 10 000 м2 — со всех сторон
+    park_link_tol_m: float = 0.3              # зазор между пятном парковки и проездом, при превышении которого достраивается съезд, м
+    park_link_max_m: float = 12.0             # ASSUMPTION: максимальная длина достраиваемого съезда к пятну, м
+    fire_all_sides_services: bool = True     # ASSUMPTION: подъезд со всех сторон ко всем сервисным зданиям (школа, детский сад, поликлиника и др.), сверх требования п. 8.1.1
+    fire_all_sides_area_m2: float = 10000.0  # п. 8.1.1: площадь застройки более 10 000 м2 — со всех сторон
     fire_all_sides_width_m: float = 100.0     # п. 8.1.1: ширина более 100 м — со всех сторон (ширина = меньшая сторона, допущение)
     corner_radius_m: float = 6.0              # ASSUMPTION: радиус закругления оси проезда на поворотах, м (нормативное значение для внутриквартальных проездов не получено; 0 — без закруглений)
     kerb_radius_m: float = 6.0                # ASSUMPTION: радиус закругления кромки проезжей части на примыканиях и углов разворотной площадки, м (СП 396.1325800 не получен; 0 — без закруглений)
@@ -220,6 +223,8 @@ def fire_sides_required(height_m: float, poly, service, p: RoadParams) -> int:
     cls = fire_class(service, p)
     if cls in ("F1.1", "F4.1"):
         return 4
+    if service and p.fire_all_sides_services:
+        return 4           # ASSUMPTION (решение автора, 28.10.2026): все сервисные здания обслуживаются со всех сторон; по п. 8.1.1 для Ф3 ниже 18 м достаточно одной
     if poly.area > p.fire_all_sides_area_m2 or _short_side(poly) > p.fire_all_sides_width_m:
         return 4
     thr = p.fire_two_sides_f13_m if cls == "F1.3" else p.fire_two_sides_public_m
@@ -792,6 +797,44 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
             if k_best is None:
                 continue
             carriageways[k_best]["geometry"] = carriageways[k_best]["geometry"].union(Rinv(g))
+    # парковочные пятна: подводящий проезд строится до ячейки растра и может не доходить до кромки пятна;
+    # достраивается короткий съезд (ширина второстепенного проезда) от ближайшей точки сети до кромки пятна
+    diag["parking_links"], diag["parking_unlinked"] = 0, []
+    if pat_r and carriageways:
+        net_r = unary_union([R(c["geometry"]) for c in carriageways] + turn_r)
+        for k_, pg_ in enumerate(pat_r):
+            d_ = pg_.distance(net_r)
+            if d_ <= p.park_link_tol_m:
+                continue
+            if d_ > p.park_link_max_m:
+                diag["parking_unlinked"].append({"patch": k_, "gap_m": round(float(d_), 1)})
+                continue
+            # кандидаты: точки кромки пятна с шагом 2,5 м -> ближайшая точка сети; берётся ближайший допустимый съезд
+            ring_ = pg_.exterior
+            cand_ = []
+            for t_ in np.arange(0.0, ring_.length, 2.5):
+                a_ = ring_.interpolate(float(t_))
+                b_ = nearest_points(net_r, a_)[0]
+                dd_ = a_.distance(b_)
+                if 0.05 < dd_ <= p.park_link_max_m:
+                    cand_.append((dd_, a_, b_))
+            cand_.sort(key=lambda t: t[0])
+            lk = None
+            for dd_, a_, b_ in cand_[:40]:
+                ux, uy = (a_.x - b_.x) / dd_, (a_.y - b_.y) / dd_
+                lk_ = LineString([(b_.x - ux * 0.5, b_.y - uy * 0.5), (a_.x, a_.y)]).buffer(p.secondary_width / 2.0, cap_style=2)
+                if lk_.intersection(bu).area > 1e-6 or bu.distance(lk_.difference(net_r)) < p.wall_gap_low[0] - 1e-6:
+                    continue
+                if pu is not None and lk_.difference(pg_.buffer(0.05)).intersection(pu).area > 1e-6:
+                    continue
+                lk = lk_
+                break
+            if lk is None:
+                diag["parking_unlinked"].append({"patch": k_, "gap_m": round(float(d_), 1)})
+                continue
+            carriageways.append({"width": p.secondary_width, "class": "secondary", "geometry": Rinv(lk)})   # перекрывается с сетью на 0,5 м: съезд не отрывается
+            net_r = net_r.union(lk)
+            diag["parking_links"] += 1
     diag["max_dead_end_m"] = round(max([t for _, t, _ in final] or [0.0]), 1)
     diag["through_links_added"] = len(extra)
     diag["turnarounds"] = len(turn)

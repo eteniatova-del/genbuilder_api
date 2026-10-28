@@ -15,7 +15,7 @@ from app.logic.roads import RoadParams, fire_width_for
 BASIS = {
     "road_access_distance": "secondary", "road_width_fire": "secondary", "dead_end_limit": "norm", "fire_access_sides": "norm",
     "roads_connected": "assumption", "turnaround_free": "secondary", "roads_no_overlap": "assumption",
-    "parking_near_road": "assumption", "parking_window_setback": "secondary", "parking_balance": "norm", "shrubs_buffers": "norm", "parking_walk_distance": "norm", "parking_edu_setback": "secondary",
+    "parking_near_road": "assumption", "parking_access": "assumption", "parking_window_setback": "secondary", "parking_balance": "norm", "shrubs_buffers": "norm", "parking_walk_distance": "norm", "parking_edu_setback": "secondary",
     "trees_buffers": "assumption", "green_norm": "secondary", "near_street_axis": "assumption",
 }
 BASIS_NOTE = {"norm": "норма (СП 42.13330 / СП 4.13130, текст проверен)", "secondary": "вторичный источник, первоисточник не сверен",
@@ -122,6 +122,15 @@ def check_layout(block, footprints, floors, services, roads, res, p, rp: RoadPar
                 if a > 1.0:
                     viol.append({"patch": k, "reason": "parking overlaps road", "area_m2": round(a, 1)})
         out.append(_res("roads_no_overlap", "Проезды не пересекают здания и парковки", len(patches) + 1, viol))
+
+        # 6а. пятно парковки примыкает к проезду (зазор не больше допуска достройки съезда)
+        viol = []
+        if road_u is not None:
+            for k, pt in enumerate(patches):
+                if pt["kind"] == "surface" and pt["geometry"].distance(road_u) > rp.park_link_tol_m + 0.05:
+                    viol.append({"patch": k, "house": pt["house_index"], "gap_m": round(pt["geometry"].distance(road_u), 1)})
+        out.append(_res("parking_access", "Наземное пятно парковки примыкает к проезду", sum(1 for pt in patches if pt["kind"] == "surface"), viol,
+                        "съезд достраивается до кромки пятна (park_link_tol_m); не норма, а условие пригодности стоянки"))
 
         # 7. парковка рядом с проездом (информационно)
         far = []
