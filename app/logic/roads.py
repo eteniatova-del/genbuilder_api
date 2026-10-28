@@ -835,6 +835,8 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
     diag["parking_links"], diag["parking_unlinked"] = 0, []
     if pat_r and carriageways:
         net_r = unary_union([R(c["geometry"]) for c in carriageways] + turn_r)
+        low_u = unary_union(low) if low else None
+        tall_u = unary_union(tall) if tall else None
         for k_, pg_ in enumerate(pat_r):
             d_ = pg_.distance(net_r)
             if d_ <= p.park_link_tol_m:
@@ -856,8 +858,12 @@ def generate_roads(block, buildings: list, floors: list, services: list | None =
             for dd_, a_, b_ in cand_[:40]:
                 ux, uy = (a_.x - b_.x) / dd_, (a_.y - b_.y) / dd_
                 lk_ = LineString([(b_.x - ux * 0.5, b_.y - uy * 0.5), (a_.x, a_.y)]).buffer(p.secondary_width / 2.0, cap_style=2)
-                if lk_.intersection(bu).area > 1e-6 or bu.distance(lk_.difference(net_r)) < p.wall_gap_low[0] - 1e-6:
+                lk_n = lk_.difference(net_r)
+                if lk_.intersection(bu).area > 1e-6:
                     continue
+                if (low_u is not None and lk_n.distance(low_u) < p.wall_gap_low[0] - 1e-6) or \
+                        (tall_u is not None and lk_n.distance(tall_u) < p.wall_gap_high[0] - 1e-6):
+                    continue          # съезд не ближе нормативного отступа до стены (5 м; выше 28 м — 8 м)
                 if pu is not None and lk_.difference(pg_.buffer(0.05)).intersection(pu).area > 1e-6:
                     continue
                 lk = lk_

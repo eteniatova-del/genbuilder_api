@@ -214,3 +214,12 @@ def test_dead_end_length_is_measured_from_the_street_and_closed_by_a_second_exit
     d = res["diagnostics"]
     assert d["through_links_added"] >= 1          # единственный подъезд длиной ~400 м закрыт вторым выходом
     assert d["max_dead_end_m"] <= 150.0
+
+
+def test_parking_link_keeps_the_wall_gap_of_a_tall_building():
+    tall = box(120, 120, 200, 138)            # 16 этажей: отступ проезда 8 м
+    patch = box(150, 90, 175, 112)            # пятно у самой стены высокого дома
+    res = generate_roads(BLOCK, [tall], [16], None, patches=[patch])
+    roads = unary_union([c["geometry"] for c in res["carriageways"]])
+    assert tall.distance(roads) >= 8.0 - 0.5
+    assert res["diagnostics"]["parking_unlinked"] == [] or patch.distance(roads) > 0.3
